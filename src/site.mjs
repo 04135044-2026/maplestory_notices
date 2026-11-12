@@ -13,6 +13,7 @@ import { rewardTypes, searchCatalog, statuses } from './search.mjs';
 import { answerPlayer, compareMethods, playerAssistant, searchWithAgent } from './player-assist.mjs';
 import { announcementUrl, collectAnnouncements, discoveryWindow, officialAnnouncement, officialPages, saveAnnouncement } from './discovery.mjs';
 import { sourceTracking } from './tracking.mjs';
+import { jobFailure, METHOD_BATCH, SOURCE_BATCH, sourceAttempt } from './jobs.mjs';
 
 const escape = value => String(value).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]);
 const link = '<a href="' + official + '" target="_blank" rel="noopener noreferrer">查看官方公告 ↗</a>';
@@ -261,20 +262,44 @@ function discoveryPage(window, registry, message) {
   const entries = Object.values(registry.entries).sort((a, b) => (b.date ?? '').localeCompare(a.date ?? ''));
   return page('探索官方公告', '<nav><a href="/">← 首頁</a> · <a href="/activities">查看活動</a></nav><h1>探索官方公告</h1>' +
     '<p>最近 90 天（台北時間） · ' + window.start + ' 至 ' + window.end + '</p>' +
-    '<form method="post"><button>檢查官方公告列表</button></form>' +
+    '<form method="post"><button>檢查官方公告列表</button></form><p><a href="/jobs">批次進度與重試</a></p>' +
     '<form method="post" action="/discover/import"><p><label>手動補入官方網址 <input type="url" name="url" required></label> ' +
     '<button>保存來源</button></p></form>' + (message ? '<p role="status">' + escape(message) + '</p>' : '') +
     (run ? '<p>上次檢查 · ' + escape(formatTimestamp(run.at)) + ' · ' + run.start + ' 至 ' + run.end +
       ' · 讀取 ' + run.pages + ' 頁 · 範圍內可讀公告連結 ' + run.candidates + ' 筆 · 保存 ' + run.saved + ' 筆</p>' +
       (run.error ? '<p role="alert">列表檢查未完成 · ' + escape(run.error) + '</p>' : '') +
       (run.failures.length ? '<details><summary>正文取得失敗 ' + run.failures.length + ' 筆</summary><ul>' +
-        run.failures.map(entry => '<li><a href="' + escape(entry.url) + '">' + escape(entry.title) + '</a> · ' +
-          escape(entry.error) + '</li>').join('') + '</ul></details>' : '') : '') +
+          run.failures.map(entry => '<li><a href="' + escape(entry.url) + '">' + escape(entry.title ?? entry.url) + '</a> · ' +
+          escape(entry.message ?? entry.error) + '</li>').join('') + '</ul></details>' : '') : '') +
     '<h2>已保存來源</h2>' + (entries.length ? '<ul>' + entries.map(entry => '<li><a href="/discover/' + entry.id + '">' +
       escape(entry.title) + '</a> · ' + escape(entry.date ?? '發布日未載明') + ' · ' + labels[entry.kind] + ' · ' +
       (entry.kind !== 'version' ? '來源已保存' : entry.active ? '可查看活動' :
         entry.review?.snapshot === entry.snapshot ? '已人工確認 · 可整理摘要' : '來源已保存 · 拆分待確認') + '</li>').join('') +
       '</ul>' : '<p>尚未保存公告來源。</p>'));
+}
+
+function jobsPage(registry, jobs, activeJobId) {
+  const sources = Object.values(registry.queue ?? {});
+  const labels = { pending: '待處理', done: '已完成', failed: '需重試' };
+  const items = [...sources.filter(job => job.state !== 'done'), ...Object.values(jobs)];
+  const detail = job => '<li><strong>' + escape(job.title ?? job.url) + '</strong> · ' + (job.id === activeJobId ? '處理中' : labels[job.state]) +
+    (job.label ? ' · ' + escape(job.label) : '') + (job.message ? '<p>' + escape(job.message) + '</p>' : '') +
+    (job.attempts ? '<p>本次嘗試 ' + job.attempts + ' 次</p>' : '') +
+    (job.provider ? '<p>模型 · ' + escape(job.provider === 'codex' ? '訂閱 Codex' : 'Gemini') +
+      ' · 用量 ' + (job.usage ? escape(JSON.stringify(job.usage)) : '未知') + '</p>' : '') +
+    (job.url ? '<p><a href="' + escape(job.url) + '">官方來源</a></p>' : '') +
+    (job.activity ? '<p><a href="/activities/' + job.activity + '">查看活動</a></p>' : '') +
+    (job.state === 'done' || job.id === activeJobId ? '' : '<form method="post" action="' + escape(job.action) + '">' +
+      Object.entries(job.fields).map(([name, value]) => '<input type="hidden" name="' + escape(name) +
+        '" value="' + escape(value) + '">').join('') + '<button>' + (job.state === 'failed' ? '重試這一項' : '處理這一項') +
+      '</button></form>') + '</li>';
+  return page('批次進度與重試', '<nav><a href="/discover">← 公告探索</a> · <a href="/updates">來源與摘要更新</a></nav>' +
+    '<h1>批次進度與重試</h1><p>公告來源 · 待處理 ' + sources.filter(job => job.state === 'pending').length +
+    ' · 已完成 ' + sources.filter(job => job.state === 'done').length + ' · 需重試 ' +
+    sources.filter(job => job.state === 'failed').length + '</p>' +
+    (sources.some(job => job.state === 'pending') ? '<form method="post" action="/discover/continue"><button>繼續公告批次</button></form>' : '') +
+    (items.length ? '<ul>' + items.map(detail).join('') + '</ul>' : '<p>目前沒有待處理或失敗項目。</p>') +
+    '<p>待確認版型可從<a href="/discover">公告探索</a>開啟原文並確認拆分。</p>');
 }
 
 async function formData(req, limit = 100_000) {
@@ -546,6 +571,7 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
   codexGenerate = createCodexGenerator(), fetchLinkedSource = fetchCorrection, generatePlayerAssistance,
   openAnnouncementPages = officialPages, fetchAnnouncement = officialAnnouncement } = {}) {
   let importing = false;
+  let activeJobId = null;
   let catalogCache;
   async function readSaved(name = 'summary.json') {
     try { return JSON.parse(await readFile(join(dir, name), 'utf8')); }
@@ -615,6 +641,80 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
   async function preferredProvider() {
     return (await readSaved('model-preferences.json'))?.provider ?? 'gemini';
   }
+  async function writeJob(id, job) {
+    const jobs = await readSaved('jobs.json') ?? {};
+    jobs[id] = job;
+    await save('jobs.json', JSON.stringify(jobs));
+  }
+  async function discoveryWork(registry, base, clock, { mode, input } = {}) {
+    let items = await browsableItems(base);
+    const queue = registry.queue ??= {};
+    const persist = () => save('discovery.json', JSON.stringify(registry));
+    const importOne = async candidate => {
+      const id = fingerprint(candidate.url).slice(0, 24);
+      const entry = await saveAnnouncement(candidate, items, fetchAnnouncement, save, registry.entries[id], clock);
+      if (!entry) return false;
+      if (entry.existing) {
+        try {
+          catalogFromSnapshot(await readFile(join(dir, entry.snapshot), 'utf8'));
+          await save('activity-source.json', JSON.stringify({ snapshot: entry.snapshot, checkedAt: clock.toISOString() }));
+          entry.active = true;
+          if (!base) items = await browsableItems({ snapshot: entry.snapshot });
+        } catch (error) {
+          if (!(error instanceof Problem)) throw error;
+        }
+      }
+      registry.entries[id] = entry;
+      return true;
+    };
+    const enqueue = candidate => {
+      const id = fingerprint(candidate.url).slice(0, 24);
+      queue[id] = { id, ...candidate, state: 'pending',
+        queuedAt: clock.toISOString(), action: '/discover/retry', fields: { id } };
+      return queue[id];
+    };
+    let work;
+    if (mode === 'manual') work = [enqueue({ url: announcementUrl(input) })];
+    else if (mode === 'retry') {
+      const job = /^[a-f0-9]{24}$/.test(input ?? '') ? queue[input] : undefined;
+      if (!job || job.state === 'done') throw new Problem('找不到待處理的公告工作。', 404);
+      work = [job];
+    } else {
+      if (mode !== 'continue') {
+        const { candidates, ...run } = await collectAnnouncements(openAnnouncementPages, clock);
+        const tracking = sourceTracking(items, registry.entries, clock);
+        const tracked = new Set([...tracking].filter(([, activities]) => activities.some(item => item.track)).map(([url]) => url));
+        const existing = new Map(Object.values(registry.entries).map(entry => [entry.url, entry]));
+        const selected = new Map(candidates.filter(candidate =>
+          !tracking.has(candidate.url) || tracked.has(candidate.url)).map(candidate => [candidate.url, candidate]));
+        for (const url of tracked) {
+          if (!selected.has(url)) selected.set(url, existing.get(url) ?? { url });
+        }
+        const sorted = [...selected.values()].sort((a, b) =>
+          Number(b.kind === 'version' || b.url === official) - Number(a.kind === 'version' || a.url === official));
+        for (const candidate of sorted) {
+          const current = queue[fingerprint(candidate.url).slice(0, 24)];
+          if (!current || (current.state === 'done' && tracked.has(candidate.url))) enqueue(candidate);
+        }
+        registry.run = { ...run, at: clock.toISOString(), candidates: candidates.length, saved: 0, failures: [] };
+      }
+      work = Object.values(queue).filter(job => job.state === 'pending')
+        .sort((a, b) => a.queuedAt.localeCompare(b.queuedAt)).slice(0, SOURCE_BATCH);
+    }
+    await persist();
+    for (const job of work) {
+      activeJobId = job.id;
+      const result = await sourceAttempt(() => importOne(job));
+      const failure = result.error ? jobFailure(result.error, 'source') : { state: 'done', label: '', message: '' };
+      Object.assign(job, failure, { attempts: result.attempts, saved: Boolean(result.value) });
+      if (registry.run) {
+        registry.run.failures = Object.values(queue).filter(entry => entry.state === 'failed');
+        if (job.saved && mode !== 'manual') registry.run.saved++;
+      }
+      await persist();
+    }
+    return { registry, work };
+  }
   return createServer(async (req, res) => {
     let methodLocked = false;
     const lockModel = () => {
@@ -652,7 +752,10 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
         return respond(200, page('活動來源追蹤', '<nav><a href="/discover">← 公告探索</a></nav><h1>活動來源追蹤</h1>' +
           (details || '<p>確認活動後即可查看來源追蹤狀態。</p>')));
       }
-      if (url.pathname === '/discover' || url.pathname === '/discover/import' ||
+      if (req.method === 'GET' && url.pathname === '/jobs') {
+        return respond(200, jobsPage(await discoveryRegistry(), await readSaved('jobs.json') ?? {}, activeJobId));
+      }
+      if (['/discover', '/discover/import', '/discover/retry', '/discover/continue'].includes(url.pathname) ||
           /^\/discover\/[a-f0-9]{24}(?:\/source)?$/.test(url.pathname)) {
         const registry = await discoveryRegistry();
         const base = await readSaved('activity-source.json') ?? await readSaved();
@@ -661,56 +764,17 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
         const [, , key, subpage] = url.pathname.split('/');
         if (req.method === 'GET' && !key) return respond(200, discoveryPage(window, registry));
         if (req.method === 'POST') lockModel();
-        if (req.method === 'POST' && (!key || key === 'import')) {
-          let items = await browsableItems(base);
-          const importOne = async candidate => {
-            const id = fingerprint(candidate.url).slice(0, 24);
-            const entry = await saveAnnouncement(candidate, items, fetchAnnouncement, save, registry.entries[id], clock);
-            if (!entry) return false;
-            if (entry.existing) {
-              try {
-                catalogFromSnapshot(await readFile(join(dir, entry.snapshot), 'utf8'));
-                await save('activity-source.json', JSON.stringify({ snapshot: entry.snapshot, checkedAt: clock.toISOString() }));
-                entry.active = !base || items.some(item => item.id.startsWith('beanfun-19129-'));
-              } catch (error) {
-                if (!(error instanceof Problem)) throw error;
-              }
-            }
-            registry.entries[id] = entry;
-            return true;
-          };
+        if (req.method === 'POST' && (!key || ['import', 'retry', 'continue'].includes(key))) {
           if (key === 'import') {
-            const candidate = { url: announcementUrl((await formData(req)).get('url')?.trim() ?? '') };
-            let saved;
-            try { saved = await importOne(candidate); }
-            catch (error) { return respond(502, discoveryPage(window, registry, '正文取得失敗 · ' + error.message)); }
-            if (!saved) return respond(200, discoveryPage(window, registry, '這份公告未找到可對應已收錄活動的異動。'));
-            await save('discovery.json', JSON.stringify(registry));
-            return res.writeHead(303, { Location: '/discover/' + fingerprint(candidate.url).slice(0, 24) }).end();
+            const input = (await formData(req)).get('url')?.trim() ?? '';
+            const { work: [job] } = await discoveryWork(registry, base, clock, { mode: 'manual', input });
+            if (job.state === 'failed') return respond(502, discoveryPage(window, registry, job.label + ' · ' + job.message));
+            if (!job.saved) return respond(200, discoveryPage(window, registry, '這份公告未找到可對應已收錄活動的異動。'));
+            return res.writeHead(303, { Location: '/discover/' + job.id }).end();
           }
-          const { candidates, ...run } = await collectAnnouncements(openAnnouncementPages, clock);
-          const tracking = sourceTracking(items, registry.entries, clock);
-          const existing = new Map(Object.values(registry.entries).map(entry => [entry.url, entry]));
-          const selected = new Map(candidates.filter(candidate =>
-            !tracking.has(candidate.url) || tracking.get(candidate.url).some(item => item.track)).map(candidate => [candidate.url, candidate]));
-          for (const [url, activities] of tracking) {
-            if (activities.some(item => item.track) && !selected.has(url)) selected.set(url, existing.get(url) ?? { url });
-          }
-          const work = [...selected.values()];
-          const failures = [];
-          let saved = 0;
-          const scan = async group => {
-            for (let index = 0; index < group.length; index += 4) await Promise.all(group.slice(index, index + 4).map(async candidate => {
-              try { if (await importOne(candidate)) saved++; }
-              catch (error) { failures.push({ ...candidate, error: error.message }); }
-            }));
-          };
-          await scan(work.filter(candidate => candidate.kind === 'version' || candidate.url === official));
-          if (!base) items = await browsableItems(await readSaved('activity-source.json'));
-          await scan(work.filter(candidate => candidate.kind !== 'version' && candidate.url !== official));
-          registry.run = { ...run, at: clock.toISOString(), candidates: candidates.length, saved, failures };
-          await save('discovery.json', JSON.stringify(registry));
-          return res.writeHead(303, { Location: '/discover' }).end();
+          const input = key === 'retry' ? (await formData(req)).get('id') : undefined;
+          await discoveryWork(registry, base, clock, { mode: key, input });
+          return res.writeHead(303, { Location: key ? '/jobs' : '/discover' }).end();
         }
         const entry = registry.entries[key];
         if (!entry) throw new Problem('找不到已保存的公告。', 404);
@@ -796,7 +860,7 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
           '<p>來源取得 ' + escape(formatTimestamp(source?.checkedAt ?? source?.capturedAt)) + '</p>' +
           (latest ? '<p>' + (latest.changed ? '來源已更新' : '公告文字未變') + ' · 已變更圖片 ' + latest.images +
             ' 張 · 無法查驗圖片 ' + latest.failed + ' 張</p>' : '') +
-          '<form method="post"><button>重新取得官方來源</button></form>' +
+          '<form method="post"><button>重新取得官方來源</button></form><p><a href="/jobs">批次進度與重試</a></p>' +
           '<form method="post" action="/model-preferences"><label>摘要預設模型 <select name="provider">' +
           '<option value="gemini"' + (provider === 'gemini' ? ' selected' : '') + '>Gemini</option>' +
           '<option value="codex"' + (provider === 'codex' ? ' selected' : '') + '>訂閱 Codex</option></select></label> ' +
@@ -1063,8 +1127,18 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
             throw new Problem('原圖版本已變更，請重新開啟圖片並核對。', 409);
           }
           const record = { ...old, url: imageUrl, selected: old?.selected ?? Boolean(shop) };
+          const imageAction = '/activities/' + item.id + '/images/' + extra;
+          const imageJobId = 'image-' + item.id + '-' + extra + '-' + action;
+          const imageJob = { title: item.title + ' › 官方圖片 ' + (item.images.indexOf(imageUrl) + 1),
+            activity: item.id, action: imageAction, fields: { action } };
           if (action !== 'remove' && (!record.version || action === 'download')) {
-            const { bytes, mime, version } = await downloadImage(imageUrl);
+            let image;
+            try { image = await downloadImage(imageUrl); }
+            catch (error) {
+              if (['download', 'select', 'recognize'].includes(action)) await writeJob(imageJobId, { ...imageJob, ...jobFailure(error, 'image') });
+              throw error;
+            }
+            const { bytes, mime, version } = image;
             if (version !== record.version) {
               delete record.recognition;
               delete record.appearance;
@@ -1089,8 +1163,17 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
           imageRecords[extra] = record;
           await save('official-images.json', JSON.stringify(imageRecords, null, 2));
           if (action === 'recognize') {
-            record.recognition = await summarizeImage({ bytes: await readFile(join(dir, 'image-' + record.version)), mime: record.mime });
+            try {
+              record.recognition = await summarizeImage({ bytes: await readFile(join(dir, 'image-' + record.version)), mime: record.mime });
+            } catch (error) {
+              await writeJob(imageJobId, { ...imageJob, provider: 'gemini', ...jobFailure(error, 'model') });
+              throw error;
+            }
             await save('official-images.json', JSON.stringify(imageRecords, null, 2));
+          }
+          if ((await readSaved('jobs.json'))?.[imageJobId]) {
+            await writeJob(imageJobId, { ...imageJob, state: 'done', provider: action === 'recognize' ? 'gemini' : undefined,
+              usage: action === 'recognize' ? record.recognition?.model?.usage ?? null : undefined });
           }
           const methods = await readSaved('activity-methods.json');
           const status = action === 'verify-text' ? '已將核對文字加入活動筆記。' :
@@ -1125,23 +1208,40 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
         const target = item.methods.find(method => method.id === methodId && method.kind === 'method');
         if (req.method === 'POST' && (target || methodId === 'batch')) {
           const batch = methodId === 'batch';
-          const provider = batch ? 'codex' : preferred;
-          const ids = batch ? [...new Set((await formData(req)).getAll('method'))] : [target.id];
+          const form = await formData(req);
+          const requestedProvider = form.get('provider');
+          const provider = batch ? 'codex' : ['gemini', 'codex'].includes(requestedProvider) ? requestedProvider : preferred;
+          const ids = batch ? [...new Set(form.getAll('method'))] : [target.id];
           const targets = item.methods.filter(entry => entry.kind === 'method' && ids.includes(entry.id));
           if (!targets.length || targets.length !== ids.length) throw new Problem('請選擇本活動的取得方法。');
-          const remaining = new Set(ids);
-          try {
-            for (const target of targets) {
+          const jobs = await readSaved('jobs.json') ?? {};
+          const jobId = target => 'method-' + target.id + '-' + provider;
+          for (const target of targets) {
+            jobs[jobId(target)] = { id: jobId(target), title: item.title + ' › ' + target.title, activity: item.id,
+              provider, state: 'pending', action: '/activities/' + item.id + '/' + (batch ? 'batch' : target.id),
+              fields: batch ? { method: target.id } : { provider } };
+          }
+          await save('jobs.json', JSON.stringify(jobs));
+          for (const target of targets.slice(0, METHOD_BATCH)) {
+            const job = jobs[jobId(target)];
+            activeJobId = job.id;
+            let generated;
+            try {
               const inputKey = methodFingerprint(item, target, imageRecords, provider, provider === 'codex' ? CODEX_MODEL : process.env.GEMINI_MODEL);
-              if (summaries[target.id]?.inputKey === inputKey) { remaining.delete(target.id); continue; }
+              if (summaries[target.id]?.inputKey === inputKey) {
+                Object.assign(job, { state: 'done', usage: summaries[target.id].model?.usage ?? null });
+                await save('jobs.json', JSON.stringify(jobs));
+                continue;
+              }
               const sources = methodContext(item, target);
               const input = { title: item.title, method: target.title, sources };
-              const generated = provider === 'codex' ? await summarizeMethod(input, async (instruction, input, properties) => {
+              generated = provider === 'codex' ? await summarizeMethod(input, async (instruction, input, properties) => {
                 const parts = [{ text: JSON.stringify(input) }];
                 for (const imageUrl of new Set([...target.images, ...(item.sharedImages ?? [])])) {
                   const record = imageRecords[imageKey(imageUrl)];
-                  if (!record?.selected || !record.version || item.shopImages?.includes(imageUrl)) continue;
-                  const bytes = await readFile(join(dir, 'image-' + record.version));
+                  if (!record?.selected || item.shopImages?.includes(imageUrl)) continue;
+                  const bytes = record.version ? await readFile(join(dir, 'image-' + record.version)).catch(() => null) : null;
+                  if (!bytes) throw Object.assign(new Problem('請先保存已選入的官方原圖，再重試摘要。'), { missingImage: true });
                   parts.push({ inlineData: { mimeType: record.mime, data: bytes.toString('base64') } });
                 }
                 const output = await codexGenerate({ parts, instruction,
@@ -1156,16 +1256,17 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
               });
               summaries[target.id] = { facts, references: sourceReferences(sources), inputKey, model: generated.metadata, at: now().toISOString() };
               await save('activity-methods.json', JSON.stringify({ snapshot: saved?.snapshot ?? item.discoverySnapshot, methods: summaries }, null, 2));
-              remaining.delete(target.id);
+              Object.assign(job, { state: 'done', usage: generated.metadata?.usage ?? null });
+              await save('jobs.json', JSON.stringify(jobs));
+            } catch (error) {
+              Object.assign(job, jobFailure(error, error.missingImage ? 'image' : 'model'));
+              job.usage ??= generated?.metadata?.usage ?? null;
+              await save('jobs.json', JSON.stringify(jobs));
+              throw error;
             }
-          } catch (error) {
-            if (batch && error instanceof Problem) {
-              await save('pending-codex-batch.json', JSON.stringify({ activity: item.id, ids: [...remaining], message: error.message }));
-            }
-            throw error;
           }
           if (batch && (await readSaved('pending-codex-batch.json'))?.activity === item.id) await save('pending-codex-batch.json', 'null');
-          return res.writeHead(303, { Location: '/activities/' + item.id + '#' + targets[0].id }).end();
+          return res.writeHead(303, { Location: targets.length > METHOD_BATCH ? '/jobs' : '/activities/' + item.id + '#' + targets[0].id }).end();
         }
       }
       if (req.method !== 'GET') throw new Problem('操作不支援。', 405);
@@ -1181,9 +1282,12 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
     } catch (error) {
       respond(error instanceof Problem ? error.status : 500,
         page('操作未完成', '<h1>操作未完成</h1><p>' + escape(error instanceof Problem ? error.message : '本機資料讀寫失敗。') +
-        '</p><p><a href="/">回首頁</a></p>'));
+        '</p><p><a href="/">回首頁</a> · <a href="/jobs">批次進度與重試</a></p>'));
     } finally {
-      if (methodLocked) importing = false;
+      if (methodLocked) {
+        importing = false;
+        activeJobId = null;
+      }
     }
   });
 }
