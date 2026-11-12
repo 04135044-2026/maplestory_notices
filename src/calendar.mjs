@@ -5,6 +5,36 @@ import { official } from './notice.mjs';
 const labels = { start: '開始', end: '截止', claim: '領獎截止' };
 const day = 86400000;
 const samePoint = (a, b) => a?.date === b?.date && a?.exact === b?.exact;
+const weekdays = '日一二三四五六';
+const resetPattern = /(?:每週([日天一二三四五六])|每日|每天)[^。；，,、週\d]{0,18}?(上午|下午|晚上|凌晨|中午)?(\d{1,2})[：:](\d{2})\s*(?:初始化|重置)/g;
+
+function methodReminders(item, method) {
+  const { participation, resets } = timeline(item, method);
+  if (!participation.start || !participation.end) return [];
+  const start = participation.start.exact ?? Date.parse(participation.start.date + 'T00:00:00+08:00');
+  const until = participation.end.exact ?? Date.parse(participation.end.date + 'T23:59:59+08:00');
+  const rules = [];
+  for (const source of resets) {
+    for (const [, weekday, period, hour, minute] of source.text.matchAll(resetPattern)) {
+      const rawHour = Number(hour);
+      if (rawHour > 23 || Number(minute) > 59 || (period && (rawHour < 1 || rawHour > 12))) continue;
+      const clockHour = period ? rawHour % 12 + (/下午|晚上|中午/.test(period) ? 12 : 0) : rawHour;
+      const frequency = weekday ? 'WEEKLY' : 'DAILY';
+      const interval = weekday ? 7 * day : day;
+      let first = Date.parse(participation.start.date + 'T' + String(clockHour).padStart(2, '0') + ':' + minute + ':00+08:00');
+      if (weekday) {
+        const localDay = new Date(participation.start.date + 'T00:00:00Z').getUTCDay();
+        first += ((weekdays.indexOf(weekday === '天' ? '日' : weekday) - localDay + 7) % 7) * day;
+      }
+      const exception = /首個(?:週[日天一二三四五六]|星期[日天一二三四五六])除外/.test(source.text);
+      if (exception && weekday) first += interval;
+      else if (/除外|例外|暫停|維護後/.test(source.text)) continue;
+      if (first < start) first += interval;
+      if (first <= until) rules.push({ method, frequency, first, until, source });
+    }
+  }
+  return [...new Map(rules.map(rule => [JSON.stringify([rule.frequency, rule.first, rule.until]), rule])).values()];
+}
 
 export function calendarActivity(item) {
   const base = timeline(item);
@@ -24,7 +54,17 @@ export function calendarActivity(item) {
       dates.push({ kind, ...value, method });
     }
   }
-  return { item, dates: dates.map(entry => ({ ...entry, label: labels[entry.kind] })) };
+  const reminders = item.methods.filter(method => method.kind === 'method').flatMap(method => methodReminders(item, method));
+  return { item, reminders, dates: dates.map(entry => ({ ...entry, label: labels[entry.kind] })) };
+}
+
+export function exportVersion(activity, frequencies = []) {
+  return fingerprint([
+    activity.dates.filter(entry => entry.point).map(({ kind, method, point }) =>
+      JSON.stringify([kind, method?.id, point.date, point.exact])).sort(),
+    activity.reminders.filter(rule => frequencies.includes(rule.frequency)).map(({ method, frequency, first, until }) =>
+      JSON.stringify([method.id, frequency, first, until])).sort(),
+  ]);
 }
 
 export function calendarMonth(month) {
@@ -57,9 +97,9 @@ function fold(line) {
   return output;
 }
 
-export function exportCalendar(activities, now, origin) {
+export function exportCalendar(activities, now, origin, options = {}) {
   const lines = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Maple Notices//Calendar//ZH-TW', 'CALSCALE:GREGORIAN'];
-  for (const { item, dates } of activities) {
+  for (const { item, dates, reminders } of activities) {
     for (const { kind, label, point, source, method } of dates.filter(entry => entry.point)) {
       const title = [item.pageTitle, item.title, method?.title].filter((name, index, names) => name && names.indexOf(name) === index).join(' › ');
       const href = origin + '/activities/' + item.id + (method ? '#' + method.id : '');
@@ -68,6 +108,15 @@ export function exportCalendar(activities, now, origin) {
       lines.push('BEGIN:VEVENT', 'UID:' + fingerprint([item.id, method?.id, kind]).slice(0, 32) + '@maplestory-notices',
         'DTSTAMP:' + utc(now), 'SUMMARY:' + icsText(label + ' · ' + title), 'DESCRIPTION:' + icsText(description),
         point.exact === null ? 'DTSTART;VALUE=DATE:' + point.date.replaceAll('-', '') : 'DTSTART:' + utc(point.exact), 'END:VEVENT');
+    }
+    for (const rule of reminders.filter(rule => options[item.id]?.includes(rule.frequency))) {
+      const title = (rule.frequency === 'DAILY' ? '每日重置' : '每週重置') + ' · ' + item.title + ' › ' + rule.method.title;
+      const description = [rule.source.text, '活動筆記 ' + origin + '/activities/' + item.id + '#' + rule.method.id,
+        '官方來源 ' + (rule.source.url ?? item.officialUrl ?? official)].join('\n');
+      lines.push('BEGIN:VEVENT', 'UID:' + fingerprint([item.id, rule.method.id, rule.frequency, rule.first]).slice(0, 32) + '@maplestory-notices',
+        'DTSTAMP:' + utc(now), 'SUMMARY:' + icsText(title), 'DESCRIPTION:' + icsText(description), 'DTSTART:' + utc(rule.first),
+        'RRULE:FREQ=' + rule.frequency + ';UNTIL=' + utc(rule.until), 'BEGIN:VALARM', 'TRIGGER:PT0M', 'ACTION:DISPLAY',
+        'DESCRIPTION:' + icsText(title), 'END:VALARM', 'END:VEVENT');
     }
   }
   return [...lines, 'END:VCALENDAR', ''].map(fold).join('\r\n');
