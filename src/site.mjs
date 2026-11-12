@@ -1,4 +1,5 @@
 import { createServer } from 'node:http';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { activity, extract, fetchNotice, fields, gemini, method, official, Problem, validate } from './notice.mjs';
@@ -19,6 +20,7 @@ import { announcementUrl, collectAnnouncements, discoveryWindow, officialAnnounc
 import { sourceTracking } from './tracking.mjs';
 import { jobFailure, METHOD_BATCH, SOURCE_BATCH, sourceAttempt } from './jobs.mjs';
 import { DEFAULT_SCHEDULE, dueCheck, validSchedule } from './schedule.mjs';
+import { activeDataDirectory, createBackup, readBackupUpload, restoreBackup } from './backup.mjs';
 
 const escape = value => String(value).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]);
 const link = '<a href="' + official + '" target="_blank" rel="noopener noreferrer">查看官方公告 ↗</a>';
@@ -254,7 +256,7 @@ function catalogResults(entries, saved, watches, back = '/') {
 
 function primaryTabs(active) {
   return '<nav class="site-tabs" aria-label="主要分頁">' + [['/', '活動與獎勵'], ['/watch', '我的關注'], ['/calendar', '活動日曆'],
-    ['/issues', '已知／修復問題'], ['/manage', '公告管理']]
+    ['/issues', '已知／修復問題'], ['/backup', '備份與還原'], ['/manage', '公告管理']]
     .map(([href, label]) => '<a href="' + href + '"' + (href === active ? ' aria-current="page"' : '') + '>' + label + '</a>').join('') + '</nav>';
 }
 
@@ -785,24 +787,34 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
   openAnnouncementPages = officialPages, fetchAnnouncement = officialAnnouncement,
   enableSchedule = false, scheduleInterval = 30000 } = {}) {
   let importing = false;
+  const dataContext = new AsyncLocalStorage();
+  let activeDirectory;
+  let currentRoot;
+  const withData = async action => dataContext.run(await (activeDirectory ??= activeDataDirectory(dir).then(path => {
+    currentRoot = path;
+    return path;
+  })), action);
+  const dataPath = (...parts) => join(dataContext.getStore(), ...parts);
   let activeJobId = null;
   let catalogCache;
   async function readSaved(name = 'summary.json') {
-    try { return JSON.parse(await readFile(join(dir, name), 'utf8')); }
+    try { return JSON.parse(await readFile(dataPath(name), 'utf8')); }
     catch (error) { if (error.code !== 'ENOENT') throw error; return null; }
   }
   async function save(name, value) {
-    const target = join(dir, name);
-    await mkdir(dir, { recursive: true });
+    if (dataContext.getStore() !== currentRoot) throw new Problem('資料剛完成還原，請重新操作。', 409);
+    const target = dataPath(name);
+    await mkdir(dataPath(), { recursive: true });
     await writeFile(target + '.tmp', value, 'utf8');
     await rename(target + '.tmp', target);
   }
   async function readCatalog(source) {
-    if (catalogCache?.snapshot !== source.snapshot) {
+    const key = dataPath(source.snapshot);
+    if (catalogCache?.key !== key) {
       const entry = {
-        snapshot: source.snapshot,
+        key,
         items: (async () => {
-          const items = catalogFromSnapshot(await readFile(join(dir, source.snapshot), 'utf8'));
+          const items = catalogFromSnapshot(await readFile(key, 'utf8'));
           await save('activity-catalog.json', JSON.stringify({ snapshot: source.snapshot, items }, null, 2));
           return items;
         })(),
@@ -815,7 +827,7 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
   async function confirmedItems(source) {
     const manual = await readSaved('manual-split.json');
     if (!manual) return [];
-    const html = await readFile(join(dir, source.snapshot), 'utf8');
+    const html = await readFile(dataPath(source.snapshot), 'utf8');
     return reviewDocument(html).fingerprint === manual.fingerprint ? manual.entries : [];
   }
   async function applyCorrections(items) {
@@ -843,10 +855,10 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
   let issueCache;
   async function readIssues(items) {
     const snapshots = issueSnapshots(await discoveryRegistry());
-    const key = fingerprint([snapshots.map(({ snapshot }) => snapshot), items.map(({ id, title }) => [id, title])]);
+    const key = fingerprint([dataPath(), snapshots.map(({ snapshot }) => snapshot), items.map(({ id, title }) => [id, title])]);
     if (issueCache?.key === key) return issueCache.value;
     const documents = await Promise.all(snapshots.map(async entry => ({
-      ...entry, html: await readFile(join(dir, entry.snapshot), 'utf8'),
+      ...entry, html: await readFile(dataPath(entry.snapshot), 'utf8'),
     })));
     const value = issueIndex(documents, items);
     issueCache = { key, value };
@@ -885,7 +897,7 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
       if (!entry) return false;
       if (entry.existing) {
         try {
-          catalogFromSnapshot(await readFile(join(dir, entry.snapshot), 'utf8'));
+          catalogFromSnapshot(await readFile(dataPath(entry.snapshot), 'utf8'));
           await save('activity-source.json', JSON.stringify({ snapshot: entry.snapshot, checkedAt: clock.toISOString() }));
           entry.active = true;
           if (!base) items = await browsableItems({ snapshot: entry.snapshot });
@@ -991,9 +1003,10 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
       activeJobId = null;
     }
   }
-  const server = createServer(async (req, res) => {
+  const handleRequest = async (req, res) => {
     let methodLocked = false;
     const lockModel = () => {
+      if (dataContext.getStore() !== currentRoot) throw new Problem('資料剛完成還原，請重新操作。', 409);
       if (importing) throw new Problem('目前正在處理另一項工作，請稍後重試。', 409);
       importing = methodLocked = true;
     };
@@ -1030,6 +1043,30 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
       }
       if (req.method === 'GET' && url.pathname === '/jobs') {
         return respond(200, jobsPage(await discoveryRegistry(), await readSaved('jobs.json') ?? {}, activeJobId));
+      }
+      if (url.pathname === '/backup' || url.pathname === '/backup/download') {
+        if (req.method === 'GET' && url.pathname === '/backup') {
+          return respond(200, page('備份與還原', primaryTabs('/backup') + '<h1>備份與還原</h1>' +
+            (url.searchParams.get('restored') === '1' ? '<p role="status">備份已還原，可從各分頁核對保存資料。</p>' : '') +
+            '<p><a href="/backup/download">下載本機備份</a></p>' +
+            '<p>備份包含官方來源、圖片、摘要、人工拆分與修正、問題來源、關注、日曆匯出紀錄與設定。移到另一環境後請重新設定 API 金鑰與 Codex 登入。</p>' +
+            '<form method="post" enctype="multipart/form-data"><label>選擇備份檔 <input type="file" name="backup" accept=".json,application/json" required></label>' +
+            '<p><label><input type="checkbox" name="confirm" value="1" required> 確認切換至備份資料</label></p>' +
+            '<button>還原備份</button></form>'));
+        }
+        lockModel();
+        if (req.method === 'GET' && url.pathname === '/backup/download') {
+          const backup = await createBackup(dataPath(), now());
+          return res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8',
+            'Content-Disposition': 'attachment; filename="maplestory-backup.json"', 'Cache-Control': 'no-store' }).end(JSON.stringify(backup));
+        }
+        if (req.method === 'POST' && url.pathname === '/backup') {
+          const restored = await restoreBackup(dir, await readBackupUpload(req));
+          currentRoot = restored;
+          activeDirectory = Promise.resolve(restored);
+          return res.writeHead(303, { Location: '/backup?restored=1' }).end();
+        }
+        throw new Problem('操作不支援。', 405);
       }
       if (url.pathname === '/watch') {
         if (req.method === 'POST') lockModel();
@@ -1130,7 +1167,7 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
         const entry = issueSnapshots(await discoveryRegistry()).find(entry => entry.id === id && entry.snapshot === snapshot);
         if (!entry) throw new Problem('找不到已保存的公告。', 404);
         return res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8', 'X-Content-Type-Options': 'nosniff',
-          'Content-Disposition': 'attachment; filename="official-notice.txt"' }).end(await readFile(join(dir, snapshot), 'utf8'));
+          'Content-Disposition': 'attachment; filename="official-notice.txt"' }).end(await readFile(dataPath(snapshot), 'utf8'));
       }
       if (req.method === 'GET' && url.pathname === '/manage') {
         const saved = await readSaved();
@@ -1241,7 +1278,7 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
         }
         const entry = registry.entries[key];
         if (!entry) throw new Problem('找不到已保存的公告。', 404);
-        const html = await readFile(join(dir, entry.snapshot), 'utf8');
+        const html = await readFile(dataPath(entry.snapshot), 'utf8');
         if (req.method === 'GET' && subpage === 'source') {
           return res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8',
             'Content-Disposition': 'attachment; filename="announcement-source.txt"', 'X-Content-Type-Options': 'nosniff' }).end(html);
@@ -1277,7 +1314,7 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
           const html = await fetchSource();
           if (!html.trim()) throw new Problem('官網回傳空白公告。');
           const checkedAt = now().toISOString();
-          const previous = source ? await readFile(join(dir, source.snapshot), 'utf8') : null;
+          const previous = source ? await readFile(dataPath(source.snapshot), 'utf8') : null;
           const snapshot = previous === html ? source.snapshot : '19129-' + checkedAt.replace(/[:.]/g, '-') + '-' + fingerprint(html).slice(0, 12) + '.html';
           if (previous !== html) await save(snapshot, html);
           await save('activity-source.json', JSON.stringify({ snapshot, checkedAt }));
@@ -1347,7 +1384,7 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
         if (!Object.values(records).flat().some(record => record.snapshot === name)) throw new Problem('找不到已保存的來源。', 404);
         return res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8',
           'Content-Disposition': 'attachment; filename="official-source.txt"', 'X-Content-Type-Options': 'nosniff' })
-          .end(await readFile(join(dir, name), 'utf8'));
+          .end(await readFile(dataPath(name), 'utf8'));
       }
       if (url.pathname === '/corrections') {
         if (req.method === 'POST') {
@@ -1490,7 +1527,7 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
         if (url.searchParams.has('v') && url.searchParams.get('v') !== record.version) {
           throw new Problem('這張圖片的版本已更新。', 404);
         }
-        const bytes = await readFile(join(dir, 'image-' + record.version));
+        const bytes = await readFile(dataPath('image-' + record.version));
         return res.writeHead(200, { 'Content-Type': record.mime, 'X-Content-Type-Options': 'nosniff' }).end(bytes);
       }
       if (url.pathname === '/review' || url.pathname === '/review/source') {
@@ -1500,7 +1537,7 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
         }
         const source = await readSaved('activity-source.json') ?? await readSaved();
         if (!source) throw new Problem('請先匯入公告 19129。', 404);
-        const html = await readFile(join(dir, source.snapshot), 'utf8');
+        const html = await readFile(dataPath(source.snapshot), 'utf8');
         if (req.method === 'GET' && url.pathname === '/review/source') {
           return res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8',
             'Content-Disposition': 'attachment; filename="19129-source.txt"', 'X-Content-Type-Options': 'nosniff' }).end(html);
@@ -1630,7 +1667,7 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
           await save('official-images.json', JSON.stringify(imageRecords, null, 2));
           if (action === 'recognize') {
             try {
-              record.recognition = await summarizeImage({ bytes: await readFile(join(dir, 'image-' + record.version)), mime: record.mime });
+              record.recognition = await summarizeImage({ bytes: await readFile(dataPath('image-' + record.version)), mime: record.mime });
             } catch (error) {
               await writeJob(imageJobId, { ...imageJob, provider: 'gemini', ...jobFailure(error, 'model') });
               throw error;
@@ -1708,7 +1745,7 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
                 for (const imageUrl of new Set([...target.images, ...(item.sharedImages ?? [])])) {
                   const record = imageRecords[imageKey(imageUrl)];
                   if (!record?.selected || item.shopImages?.includes(imageUrl)) continue;
-                  const bytes = record.version ? await readFile(join(dir, 'image-' + record.version)).catch(() => null) : null;
+                  const bytes = record.version ? await readFile(dataPath('image-' + record.version)).catch(() => null) : null;
                   if (!bytes) throw Object.assign(new Problem('請先保存已選入的官方原圖，再重試摘要。'), { missingImage: true });
                   parts.push({ inlineData: { mimeType: record.mime, data: bytes.toString('base64') } });
                 }
@@ -1757,10 +1794,16 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
         activeJobId = null;
       }
     }
+  };
+  const server = createServer((req, res) => {
+    void withData(() => handleRequest(req, res)).catch(() => {
+      if (!res.headersSent) res.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' });
+      res.end('本機資料無法開啟。');
+    });
   });
   if (enableSchedule) {
     let timer;
-    const tick = () => runSchedule().catch(error => console.error('每日排程未能保存狀態：' + error.message));
+    const tick = () => withData(runSchedule).catch(error => console.error('每日排程未能保存狀態：' + error.message));
     server.on('listening', () => {
       timer = setInterval(tick, scheduleInterval);
       timer.unref();
