@@ -17,7 +17,7 @@ function timing(dates, now) {
   return { status, text: start.replaceAll('-', '/') + ' ～ ' + end.slice(5).replace('-', '/') + '（起迄時刻未載明）' };
 }
 
-function home(saved, query, now) {
+function home(saved, query, now, status) {
   let result = '';
   if (!saved) result = '<p>尚未整理公告，匯入後即可搜尋。</p>';
   else if (!query || [saved.notice.reward, activity, method].some(value => value.includes(query))) {
@@ -28,7 +28,10 @@ function home(saved, query, now) {
   } else result = '<p>在已收錄的獎勵或活動中找不到符合的名稱。</p>';
   return page('新楓之谷公告懶人包', '<h1>新楓之谷公告懶人包</h1><form method="get"><label for="q">搜尋獎勵或活動</label> <input id="q" name="q" value="' +
     escape(query) + '"> <button>搜尋</button></form>' + result +
-    '<details><summary>公告管理</summary><form method="post" action="/import"><button>匯入並整理公告 19129</button></form></details>');
+    '<details' + (status ? ' open' : '') + '><summary>公告管理</summary>' +
+    (status ? '<p>' + escape(status) + '</p>' : '') +
+    (saved ? '<p>已保存摘要：' + escape(new Date(saved.capturedAt).toLocaleString('zh-TW', { timeZone: 'Asia/Taipei' })) + '（台灣時間）</p>' : '') +
+    '<form method="post" action="/import"><button>匯入並整理公告 19129</button></form></details>');
 }
 
 function note(saved, now) {
@@ -39,17 +42,17 @@ function note(saved, now) {
   const fact = key => row(fields[key], summary[key].text, summary[key].source);
   return page(activity, '<nav><a href="/?q=' + encodeURIComponent(notice.reward) + '">← 回搜尋結果</a></nav><h1>' + activity +
     '</h1><p>' + time.status + ' · ' + link + '</p><dl>' + fact('eligibility') + row('參加期間', time.text, notice.date?.id) +
-    row('領獎期限', '此活動段落未載明獨立領獎期限', summary.steps.source) + '</dl><article id="method"><h2>' + method +
+    row('領獎期限', notice.claim ? '請查看公告所列領取條件' : '此活動段落未載明獨立領獎期限',
+      notice.claim?.id ?? 'sources') + '</dl><article id="method"><h2>' + method +
     '</h2><dl>' + ['first', 'reward', 'steps', 'limits'].map(fact).join('') +
-    '</dl><a href="#' + notice.table + '">查看應援規則與獎勵表</a></article><h2>官方公告段落</h2>' +
+    '</dl><a href="#' + notice.table + '">查看應援規則與獎勵表</a></article><h2 id="sources">官方公告段落</h2>' +
     notice.sources.map(source => '<article id="' + source.id + '"><pre>' + escape(source.text) + '</pre></article>').join(''));
 }
 
 export function website({ dir = 'data', now = () => new Date(), fetchSource = fetchNotice, summarize = gemini } = {}) {
   let importing = false;
-  const file = join(dir, 'summary.json');
-  async function readSaved() {
-    try { return JSON.parse(await readFile(file, 'utf8')); }
+  async function readSaved(name = 'summary.json') {
+    try { return JSON.parse(await readFile(join(dir, name), 'utf8')); }
     catch (error) { if (error.code !== 'ENOENT') throw error; return null; }
   }
   async function save(name, value) {
@@ -74,22 +77,30 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
         }
         if (importing) throw new Problem('公告正在整理中。', 409);
         importing = true;
+        let sourceSaved = false;
         try {
           const html = await fetchSource();
           if (!html.trim()) throw new Problem('官網回傳空白公告。');
           const capturedAt = now().toISOString();
           const snapshot = '19129-' + capturedAt.replace(/[:.]/g, '-') + '.html';
           await save(snapshot, html);
+          sourceSaved = true;
           const notice = extract(html);
           const generated = await summarize(notice);
           const summary = validate(generated?.result ?? generated, notice);
           const saved = { notice, summary, snapshot, capturedAt, model: generated?.metadata ?? null };
           await save('summary.json', JSON.stringify(saved, null, 2));
+          await save('status.json', 'null');
           return respond(200, home(saved, '核心寶石', now()));
+        } catch (error) {
+          if (!(error instanceof Problem)) throw error;
+          const status = (sourceSaved ? '已保存來源，摘要待更新。' : '本次來源取得未完成。') + error.message;
+          await save('status.json', JSON.stringify(status));
+          return respond(error.status, home(await readSaved(), '', now(), status));
         } finally { importing = false; }
       }
       if (req.method !== 'GET') throw new Problem('操作不支援。', 405);
-      if (url.pathname === '/') return respond(200, home(await readSaved(), url.searchParams.get('q')?.trim() ?? '', now()));
+      if (url.pathname === '/') return respond(200, home(await readSaved(), url.searchParams.get('q')?.trim() ?? '', now(), await readSaved('status.json')));
       if (url.pathname === '/note') {
         const saved = await readSaved();
         if (saved) return respond(200, note(saved, now()));

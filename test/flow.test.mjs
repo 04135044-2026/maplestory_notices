@@ -4,6 +4,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { website } from '../src/site.mjs';
+import { Problem } from '../src/notice.mjs';
 
 const html = '<h3>活動時間：</h3><p>2026/10/21 09:00 ~ 2026/12/01 23:59</p>' +
   '<p style="font-size:20pt;font-weight:700">【搖滾樂園粉絲俱樂部招募】</p>' +
@@ -13,7 +14,7 @@ const html = '<h3>活動時間：</h3><p>2026/10/21 09:00 ~ 2026/12/01 23:59</p>
   '<tr><td>核心寶石(1個)交換券</td><td>5</td></tr></table><p>每日10次，每週30次</p>' +
   '<p style="font-size:15pt;font-weight:700">【墮落雷霆應援】</p>';
 
-test('匯入公告後可從首頁搜尋獎勵，重開仍可查看取得方式與期限', async () => {
+test('匯入官方公告後可從首頁搜尋獎勵，重開仍可查看獎勵取得方法與期限', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'maple-flow-'));
   const options = {
     dir, now: () => new Date('2026-11-12T20:00:00+08:00'),
@@ -39,12 +40,22 @@ test('匯入公告後可從首頁搜尋獎勵，重開仍可查看取得方式�
     assert.match(result, /\/note#method/);
     assert.match(result, /進行中/);
     await new Promise(resolve => server.close(resolve));
-    url = await start({ ...options, summarize: async () => ({}) });
-    assert.equal((await fetch(url + '/import', { method: 'POST' })).status, 422);
-    const note = await (await fetch(url + '/note')).text();
-    assert.match(note, /狩獵500隻後從介面領取/);
-    assert.match(note, /未載明獨立領獎期限/);
-    assert.match(note, /查看官方公告/);
+    const failures = [
+      [{ fetchSource: async () => '' }, 422, /空白公告/],
+      [{ fetchSource: async () => { throw new Problem('官網連線失敗', 502); } }, 502, /官網連線失敗/],
+      [{ summarize: async () => { throw new Problem('Gemini 免費額度受限', 429); } }, 429, /免費額度受限/],
+      [{ summarize: async () => ({}) }, 422, /輸出無效/],
+    ];
+    for (const [config, status, message] of failures) {
+      url = await start({ ...options, ...config });
+      assert.equal((await fetch(url + '/import', { method: 'POST' })).status, status);
+      assert.match(await (await fetch(url)).text(), message);
+      const note = await (await fetch(url + '/note')).text();
+      assert.match(note, /狩獵500隻後從介面領取/);
+      assert.match(note, /未載明獨立領獎期限/);
+      assert.match(note, /查看官方公告/);
+      await new Promise(resolve => server.close(resolve));
+    }
   } finally {
     if (server?.listening) await new Promise(resolve => server.close(resolve));
     await rm(dir, { recursive: true, force: true });
