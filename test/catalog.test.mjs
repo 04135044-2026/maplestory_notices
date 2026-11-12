@@ -129,10 +129,12 @@ test('從活動入口核對取得方法，Gemini 只收到指定方法的適用�
   await writeFile(join(dir, snapshot), html);
   await writeFile(join(dir, 'summary.json'), JSON.stringify({ snapshot }));
   let imageCalls = 0;
+  let methodCalls = 0;
   const server = website({ dir, now: () => new Date('2026-11-12T20:00:00+08:00'),
     downloadImage: async () => ({ bytes: Buffer.from('sample-image'), mime: 'image/png', version: 'sample' }),
     summarizeImage: async () => { imageCalls++; return { text: '原圖不含可辨識文字' }; },
     summarizeActivityMethod: async ({ sources }) => {
+      methodCalls++;
       assert.ok(sources.some(source => source.text.includes('內拉')));
       assert.ok(sources.some(source => source.scope === '共用注意事項'));
       assert.ok(sources.every(source => !source.text.includes('老手設計師') && !source.text.includes('權達開')));
@@ -159,11 +161,14 @@ test('從活動入口核對取得方法，Gemini 只收到指定方法的適用�
     assert.match(detail, /4萬分或單局獲得1250分/);
     const action = detail.match(/action="(\/activities\/[^"]+)"/)?.[1];
     assert.equal((await fetch(root + action, { method: 'POST', redirect: 'manual' })).status, 303);
+    assert.equal((await fetch(root + action, { method: 'POST', redirect: 'manual' })).status, 303);
+    assert.equal(methodCalls, 1);
     const imageAction = detail.match(/action="(\/activities\/[^"]+\/images\/[^"#]+)#/)?.[1];
     assert.ok(imageAction);
     const select = await fetch(root + imageAction, { method: 'POST', body: new URLSearchParams({ action: 'select' }) });
     assert.equal(select.status, 200);
     assert.equal(imageCalls, 0);
+    assert.match(await (await fetch(root + '/updates')).text(), /摘要待重整 · 舊摘要仍可讀/);
     const rendered = await select.text();
     const cached = rendered.match(/src="(\/images\/[^"]+)"/)?.[1];
     assert.equal(await (await fetch(root + cached)).text(), 'sample-image');
@@ -190,6 +195,40 @@ test('從活動入口核對取得方法，Gemini 只收到指定方法的適用�
     assert.doesNotMatch(home, /搖滾音樂節幸運箱/);
     chairSearch.set('state', '已結束');
     assert.match(await (await fetch(root + '/?' + chairSearch)).text(), /已收錄的公告 19129.*找不到/);
+  } finally {
+    if (server.listening) await new Promise(resolve => server.close(resolve));
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('網站保留補充來源，只有明示更正才更新參加期限', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'maple-correction-'));
+  const snapshot = '19129-corrections.html';
+  const original = page(heading('慶典活動', 20) + chair);
+  await writeFile(join(dir, snapshot), original);
+  await writeFile(join(dir, 'activity-source.json'), JSON.stringify({ snapshot }));
+  const item = catalogFromSnapshot(original)[0];
+  const note = '三眼章魚直火燒烤 活動期間延長至2026/12/08 23:59';
+  const supplementary = '三眼章魚直火燒烤 活動日期12/09';
+  const officialUrl = 'https://maplestory.beanfun.com/bulletin?bid=83987';
+  const server = website({ dir, now: () => new Date('2026-12-02T20:00:00+08:00'),
+    fetchLinkedSource: async url => ({ url, html: '<p>' + note + '</p><p>' + supplementary + '</p>' }),
+  });
+  try {
+    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+    const root = 'http://127.0.0.1:' + server.address().port;
+    const post = (kind, quote, end) => fetch(root + '/corrections', {
+      method: 'POST', redirect: 'manual',
+      body: new URLSearchParams({ activity: item.id, url: officialUrl, field: 'participation', kind, quote, end }),
+    });
+    const detail = () => fetch(root + '/activities/' + item.id).then(response => response.text());
+    assert.equal((await post('supplement', supplementary, '')).status, 303);
+    assert.match(await detail(), /已結束[\s\S]*另有來源待比對/);
+    assert.equal((await post('correction', supplementary, '2026/12/09')).status, 422);
+    assert.equal((await post('correction', note, '2026/12/08 23:59')).status, 303);
+    const updated = await detail();
+    assert.match(updated, /進行中[\s\S]*12\/08 23:59[\s\S]*原公告[\s\S]*12\/01/);
+    assert.match(updated, /查閱官方更正/);
   } finally {
     if (server.listening) await new Promise(resolve => server.close(resolve));
     await rm(dir, { recursive: true, force: true });
