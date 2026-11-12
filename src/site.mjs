@@ -12,7 +12,7 @@ import { activityState, periodText, timeline, versionPeriod } from './periods.mj
 import { activityRewards, rewardTypes, searchCatalog, statuses } from './search.mjs';
 import { watchKey, watchVersion } from './watch.mjs';
 import { editChanged, editEvidence, editKey } from './manual-edits.mjs';
-import { calendarActivity, calendarMonth, exportCalendar } from './calendar.mjs';
+import { calendarActivity, calendarMonth, exportCalendar, exportVersion } from './calendar.mjs';
 import { issueIndex } from './known-issues.mjs';
 import { answerPlayer, compareMethods, playerAssistant, searchWithAgent } from './player-assist.mjs';
 import { announcementUrl, collectAnnouncements, discoveryWindow, officialAnnouncement, officialPages, saveAnnouncement } from './discovery.mjs';
@@ -346,11 +346,15 @@ function calendarPage(activities, all, month, today, filters, message, selected 
         '<li><a href="/activities/' + item.id + (method ? '#' + method.id : '') + '">' +
         escape(item.title + (method ? ' › ' + method.title : '')) + '</a></li>').join('') + '</ul>').join('');
   }).join('');
-  const options = activities.map(({ item, dates }) => {
+  const options = activities.map(({ item, dates, reminders }) => {
     const known = dates.filter(entry => entry.point).length;
     const unavailable = dates.filter(entry => !entry.point);
     return '<li><label><input type="checkbox" name="activity" value="' + item.id + '"' + (selected.includes(item.id) ? ' checked' : '') +
       (known ? '' : ' disabled') + '> ' + escape(familyTitle(item) + ' › ' + item.title) + ' · ' + known + ' 項可匯出</label>' +
+      (reminders.length ? '<div>' + [...new Set(reminders.map(rule => rule.frequency))].map(frequency =>
+        '<label><input type="checkbox" name="reminder" value="' + item.id + ':' + frequency + '"> ' +
+        (frequency === 'DAILY' ? '每日' : '每週') + '重置提醒</label> ').join('') + '</div>' :
+        '<small> · 公告未提供可匯出的重置週期</small>') +
       (unavailable.length ? '<details><summary>無法匯出的日期</summary><ul>' + unavailable.map(entry => '<li>' +
         escape((entry.method ? entry.method.title + ' · ' : '') + entry.label + ' · ' +
           (entry.source?.text ? '日期待確認 · ' + entry.source.text : '公告未載明日期')) + '</li>').join('') + '</ul></details>' : '') + '</li>';
@@ -367,11 +371,14 @@ function calendarPage(activities, all, month, today, filters, message, selected 
     '</div>' + cells + '</div></div><section class="calendar-details" id="calendar-date-details"><h2>' +
     (selectedDay ? selectedDay.slice(5).replace('-', '/') + ' 活動清單' : '日期活動清單') + '</h2>' +
     (selectedDay ? detailGroups || '<p>這天沒有符合篩選的活動日期。</p>' : '<p>點選日期或項目數量，查看活動名稱。</p>') + '</section></div>' +
-    '<h2>選取活動匯出</h2>' + (message ? '<p role="alert">' + escape(message) + '</p>' : '') +
+    '<h2>選取活動匯出</h2>' + (filters.changed.length ? '<p role="status">下列活動的日期或已匯出提醒已變更，請重新匯出：</p><ul>' +
+      filters.changed.map(title => '<li>' + escape(title) + '</li>').join('') + '</ul>' : '') +
+    (message ? '<p role="alert">' + escape(message) + '</p>' : '') +
     '<details' + (message ? ' open' : '') + '><summary>選取要匯出的活動</summary><form method="post" action="/calendar">' + filterFields +
     (filters.watched ? '<input type="hidden" name="watched" value="1">' : '') +
     '<input type="hidden" name="family" value="' + escape(filters.family) + '"><ul>' + options +
-    '</ul><button>下載 .ics</button></form></details>');
+    '</ul><p>重新匯出後請在外部日曆管理先前匯入的事件。舊事件不會自動更新或刪除，重複匯入可能產生副本。</p>' +
+    '<button>下載 .ics</button></form></details>');
 }
 
 function managementPage(saved, status, hasSnapshot) {
@@ -1061,8 +1068,13 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
         const month = /^(?:19|20|21)\d{2}-(?:0[1-9]|1[0-2])$/.test(requested) ? requested : today.slice(0, 7);
         const items = await browsableItems(await readSaved('activity-source.json') ?? await readSaved());
         const all = items.map(calendarActivity);
+        const history = await readSaved('calendar-exports.json') ?? {};
         const filters = { family: params.get('family') ?? '', watched: params.get('watched') === '1',
-          day: params.get('day') ?? '', expanded: params.get('expanded') === '1' };
+          day: params.get('day') ?? '', expanded: params.get('expanded') === '1',
+          changed: all.filter(activity => {
+            const previous = history[activity.item.id];
+            return previous && previous.version !== exportVersion(activity, previous.frequencies);
+          }).map(activity => activity.item.title) };
         const watches = filters.watched ? await readSaved('watches.json') ?? {} : {};
         const activities = all.filter(({ item }) => (!filters.family || familyTitle(item) === filters.family) &&
           (!filters.watched || watches[item.id] || item.methods.filter(method => method.kind === 'method').some(method =>
@@ -1073,9 +1085,23 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
         if (!ids.length || selected.length !== ids.length || !selected.some(({ dates }) => dates.some(entry => entry.point))) {
           return respond(422, calendarPage(activities, all, month, today, filters, '請勾選至少一個有確定日期的活動。', ids));
         }
+        lockModel();
+        const currentHistory = await readSaved('calendar-exports.json') ?? {};
+        const requestedReminders = new Set(params.getAll('reminder'));
+        const options = {};
+        const at = now();
+        for (const activity of selected) {
+          const id = activity.item.id;
+          const frequencies = [...new Set(activity.reminders.map(rule => rule.frequency))].filter(frequency =>
+            requestedReminders.has(id + ':' + frequency));
+          options[id] = frequencies;
+          currentHistory[id] = { version: exportVersion(activity, frequencies), frequencies, exportedAt: at.toISOString() };
+        }
+        const file = exportCalendar(selected, at, 'http://' + req.headers.host, options);
+        await save('calendar-exports.json', JSON.stringify(currentHistory));
         return res.writeHead(200, { 'Content-Type': 'text/calendar; charset=utf-8',
           'Content-Disposition': 'attachment; filename="maplestory-activities.ics"', 'X-Content-Type-Options': 'nosniff' })
-          .end(exportCalendar(selected, now(), 'http://' + req.headers.host));
+          .end(file);
       }
       if (req.method === 'GET' && url.pathname === '/issues') {
         const items = await browsableItems(await readSaved('activity-source.json') ?? await readSaved());

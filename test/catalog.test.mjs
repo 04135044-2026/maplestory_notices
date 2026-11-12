@@ -388,9 +388,11 @@ test('網站保留補充來源，只有明示更正才更新參加期限', async
     const updated = await detail();
     assert.match(updated, /進行中[\s\S]*12\/08 23:59[\s\S]*原公告[\s\S]*12\/01/);
     assert.match(updated, /查閱官方更正/);
+    assert.match(await fetch(root + '/calendar').then(response => response.text()), /請重新匯出/);
     const correctedCalendar = await fetch(root + '/calendar', { method: 'POST',
       body: new URLSearchParams({ activity: item.id }) }).then(response => response.text());
     assert.match(correctedCalendar, /DTSTART:20261208T155900Z/);
+    assert.doesNotMatch(await fetch(root + '/calendar').then(response => response.text()), /請重新匯出/);
     assert.match(await editor(), /保存個人修正時的依據[\s\S]*目前自動摘要與來源/);
     assert.equal((await edit('restore')).status, 303);
     assert.match(await detail(), /已保存的自動步驟/);
