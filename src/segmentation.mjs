@@ -20,7 +20,7 @@ function nodeText($, element) {
   return clean(copy.text());
 }
 
-function tableRows($, table) {
+export function tableRows($, table) {
   return $(table).find('tr').toArray().map(row => $(row).children('th,td').map((_, cell) => clean($(cell).text())).get());
 }
 
@@ -98,11 +98,15 @@ export function splitNotice(html) {
   }
   let ordinal = 0;
   function paragraphs(nodes, scope) {
-    return nodes.filter(node => ['p','table','ul','ol','li'].includes(node.tagName)).flatMap(node => {
+    const sources = [];
+    for (const node of nodes.filter(node => ['p','table','ul','ol','li'].includes(node.tagName))) {
       const text = nodeText($, node);
-      return text ? [{ id: `P${String(++ordinal).padStart(3, '0')}`, scope, text,
-        rows: node.tagName === 'table' ? tableRows($, node) : undefined }] : [];
-    });
+      const images = imagesIn([node]);
+      if (text) sources.push({ id: `P${String(++ordinal).padStart(3, '0')}`, scope, text, images,
+        rows: node.tagName === 'table' ? tableRows($, node) : undefined });
+      else if (images.length && sources.length) sources.at(-1).images.push(...images);
+    }
+    return sources;
   }
   const sharedSources = [];
   const dateDiv = content.children('div').filter((_, div) => clean($(div).children('h3').text()) === '活動時間：').first();

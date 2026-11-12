@@ -1,12 +1,13 @@
 const sourceDate = /(?:(\d{4})\/)?(\d{1,2})\/(\d{1,2})(?:\s+(\d{1,2}):(\d{2}))?/g;
 const taipei = new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Taipei' });
 
-function endpoint(match, years) {
+function endpoint(match, years, bounds) {
   const [, explicit, month, day, hour, minute] = match;
   const possible = (explicit ? [explicit] : years).flatMap(year => {
     const date = [year, month.padStart(2, '0'), day.padStart(2, '0')].join('-');
     const utc = new Date(date + 'T00:00:00Z');
-    return Number.isFinite(+utc) && utc.toISOString().startsWith(date) ? [date] : [];
+    const inBounds = explicit || !bounds || (date >= bounds.start.date && date <= bounds.end.date);
+    return inBounds && Number.isFinite(+utc) && utc.toISOString().startsWith(date) ? [date] : [];
   });
   if (possible.length !== 1) return null;
   const uncertain = /維護[前後]/.test(match.input);
@@ -15,10 +16,10 @@ function endpoint(match, years) {
   return { date: possible[0], exact };
 }
 
-function range(source, years) {
+function range(source, years, bounds) {
   if (!source) return { source };
   const matches = [...source.text.matchAll(sourceDate)];
-  const points = matches.map(match => endpoint(match, years));
+  const points = matches.map(match => endpoint(match, years, bounds));
   if (points.some(point => !point) || points.length > 2) return { source };
   if (points.length === 2 && points[0].date > points[1].date) return { source };
   const [first, last] = points;
@@ -31,7 +32,9 @@ function range(source, years) {
 export function timeline(item, method) {
   const version = item.sources.find(source => source.scope.startsWith('版本共用期間'));
   const years = [...new Set([...(version?.text ?? '').matchAll(/(\d{4})\//g)].map(match => match[1]))];
-  const sourceYears = years.length === 1 ? years : [];
+  const shared = range(version, []);
+  const bounds = shared.start && shared.end && !/1900\/.*2100\//.test(version?.text ?? '') ? shared : undefined;
+  const sourceYears = bounds ? years : [];
   const own = method ? item.sources.filter(source => method.sourceIds.includes(source.id)) : item.local;
   const localDate = own.find(source => /^活動(?:日期|時間)|^參加(?:期間|時間|期限)/.test(source.text));
   const localClaim = own.find(source => /^(?:領獎|獎勵領取|領取)(?:期間|時間|期限|截止)/.test(source.text.replace(/^[^\p{L}\p{N}]+/u, '')));
@@ -39,11 +42,11 @@ export function timeline(item, method) {
   const base = method ? timeline(item) : null;
   const date = localDate ?? item.date;
   const permanent = /1900\/.*2100\//.test(date?.text ?? '');
-  const participation = permanent ? { source: date, permanent } : range(date, sourceYears);
+  const participation = permanent ? { source: date, permanent } : range(date, sourceYears, bounds);
   return {
     participation,
-    claim: localClaim ? range(localClaim, sourceYears) : base?.claim ?? { source: null },
-    opening: localOpen ? range(localOpen, sourceYears) : base?.opening ?? { source: null },
+    claim: localClaim ? range(localClaim, sourceYears, bounds) : base?.claim ?? { source: null },
+    opening: localOpen ? range(localOpen, sourceYears, bounds) : base?.opening ?? { source: null },
     resets: own.filter(source => /初始化|重置/.test(source.text)),
   };
 }
