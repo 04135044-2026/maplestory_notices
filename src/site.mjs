@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { activity, extract, fetchNotice, fields, gemini, method, official, Problem, validate } from './notice.mjs';
 import { catalogFromSnapshot, methodContext, methodFacts, methodFields, summarizeMethod, validateMethod } from './catalog.mjs';
 import { manualActivity, mergeManual, reviewDocument } from './review.mjs';
+import { fetchOfficialImage, imageKey, recognizeImage } from './images.mjs';
 
 const escape = value => String(value).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]);
 const link = '<a href="' + official + '" target="_blank" rel="noopener noreferrer">查看官方公告 ↗</a>';
@@ -96,11 +97,21 @@ function activityList(activities, query, now, pending = false) {
     }).join('') : '<p>查無符合的活動。</p>'));
 }
 
-function activityDetail(item, now, summaries = {}, status = '') {
+function activityDetail(item, now, summaries = {}, status = '', imageRecords = {}) {
   const time = timing(item.dates, now);
   const cite = source => source ? escape(source.text) + ' <a href="#' + source.id + '">查看依據</a>' : '未載明／待確認';
   const facts = (label, sources) => '<dt>' + label + '</dt>' +
     (sources.length ? sources.map(source => '<dd>' + cite(source) + '</dd>').join('') : '<dd>未載明／待確認</dd>');
+  const placed = new Set();
+  const imagesFor = urls => urls.filter(url => !placed.has(url)).map(url => {
+    placed.add(url);
+    const key = imageKey(url);
+    const record = imageRecords[key];
+    if (!(record?.selected ?? item.shopImages?.includes(url))) return '';
+    return '<figure><img loading="lazy" style="max-width:100%" src="' +
+      (record?.version ? '/images/' + key : escape(url)) + '" alt="' + escape(record?.appearance || '官方原圖') + '">' +
+      '<figcaption>' + escape(record?.appearance || '官方原圖 · 物品對應待確認') + '</figcaption></figure>';
+  }).join('');
   const sections = item.methods.map(method => {
     if (method.kind === 'reference') return '<details><summary>補充說明 · ' + escape(method.title) +
       '</summary>' + methodContext(item, method).filter(source => method.sourceIds.includes(source.id))
@@ -112,7 +123,7 @@ function activityDetail(item, now, summaries = {}, status = '') {
       facts('第一步', steps ? [steps] : []) + facts(rewardLabel, shortRewards) + facts('重要限制', limits) +
       facts('成本及付費條件', costs) +
       facts('機率', chances.filter(source => /機率/.test(source.text))) +
-      '</dl><details><summary>Gemini 整理</summary>' +
+      '</dl>' + imagesFor(method.images.filter(url => !item.sharedImages?.includes(url))) + '<details><summary>Gemini 整理</summary>' +
       (summaries[method.id] ? '<dl>' + Object.entries(methodFields).map(([key, label]) =>
         facts(label, summaries[method.id].facts[key].map(fact => ({ text: fact.text, id: fact.source })))).join('') + '</dl>' : '<p>尚未整理這個方法。</p>') +
       '<form method="post" action="/activities/' + item.id + '/' + method.id + '"><button>用 Gemini 整理這個方法</button></form></details>' +
@@ -127,11 +138,25 @@ function activityDetail(item, now, summaries = {}, status = '') {
       ? '</dd><dd>版本共用資格 · ' + cite(item.sharedEligibility) : '') +
     '</dd><dt>參加期間</dt><dd>' + time.text + (item.date ? ' <a href="#' + item.date.id + '">查看依據</a>' : '') +
     '</dd><dt>領獎期限</dt><dd>' + cite(item.local.find(source => /(?:領獎|領取)(?:期限|期間|截止)/.test(source.text))) +
-    '</dd></dl>' + sections +
+    '</dd></dl>' + sections + imagesFor(item.images) +
     '<h2>官方公告段落</h2>' + item.sources.map(source => '<article id="' + source.id + '"><small>' +
       escape(source.scope) + '</small><pre>' + escape(source.text) + '</pre></article>').join('') +
-    '<details><summary>官方圖片來源（內容待確認）</summary>' +
-    item.images.map((url, i) => '<p><a href="' + escape(url) + '" target="_blank" rel="noopener noreferrer">官方圖片 ' + (i + 1) + '</a></p>').join('') + '</details>');
+    '<details id="image-library"><summary>官方圖片來源與選圖</summary>' +
+    item.images.map((url, i) => {
+      const key = imageKey(url);
+      const record = imageRecords[key];
+      const shop = item.shopImages?.includes(url);
+      const selected = record?.selected ?? shop;
+      return '<article id="image-' + key + '"><p><a href="' + escape(url) + '">官方圖片 ' + (i + 1) + '</a> · ' +
+        (record?.version ? '<a href="/images/' + key + '">本機原圖</a>' : '尚未保存本機原圖') + '</p>' +
+        (record?.recognition ? '<details><summary>圖片辨識 · 待人工核對</summary><pre>' + escape(record.recognition.text) + '</pre></details>' : '') +
+        '<form method="post" action="/activities/' + item.id + '/images/' + key + '#image-' + key + '">' +
+        '<button name="action" value="download">保存／重試原圖</button> ' +
+        '<button name="action" value="' + (selected ? 'remove' : 'select') + '">' + (selected ? '移出' : '選入') + '懶人包</button> ' +
+        (shop ? '' : '<button name="action" value="recognize">Gemini 辨識這張圖</button>' +
+          '<p><label>已核對的單一獎勵名稱 <input name="appearance" maxlength="100" value="' + escape(record?.appearance || '') +
+          '"></label> <button name="action" value="confirm">保存外觀對應</button></p>') + '</form></article>';
+    }).join('') + '</details>');
 }
 
 function note(saved, now, query) {
@@ -154,7 +179,8 @@ function note(saved, now, query) {
     notice.sources.map(source => '<article id="' + source.id + '"><pre>' + escape(source.text) + '</pre></article>').join(''));
 }
 
-export function website({ dir = 'data', now = () => new Date(), fetchSource = fetchNotice, summarize = gemini, summarizeActivityMethod = summarizeMethod } = {}) {
+export function website({ dir = 'data', now = () => new Date(), fetchSource = fetchNotice, summarize = gemini,
+  summarizeActivityMethod = summarizeMethod, downloadImage = fetchOfficialImage, summarizeImage = recognizeImage } = {}) {
   let importing = false;
   let catalogCache;
   async function readSaved(name = 'summary.json') {
@@ -171,7 +197,7 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
     let methodLocked = false;
     const respond = (status, body) => res.writeHead(status, {
       'Content-Type': 'text/html; charset=utf-8', 'X-Content-Type-Options': 'nosniff',
-      'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'",
+      'Content-Security-Policy': "default-src 'none'; img-src 'self' https://tw.hicdn.beanfun.com; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'",
     }).end(body);
     try {
       if (!/^(?:127\.0\.0\.1|localhost)(?::\d+)?$/.test(req.headers.host ?? '')) {
@@ -211,6 +237,13 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
         const saved = await readSaved();
         return respond(200, home(saved, url.searchParams.get('q')?.trim() ?? '', now(), await readSaved('status.json'),
           Boolean(await readSaved('activity-source.json') ?? saved)));
+      }
+      if (req.method === 'GET' && /^\/images\/[a-f0-9]{24}$/.test(url.pathname)) {
+        const key = url.pathname.split('/').at(-1);
+        const record = (await readSaved('official-images.json'))?.[key];
+        if (!record?.version) throw new Problem('找不到已保存的圖片。', 404);
+        const bytes = await readFile(join(dir, 'image-' + record.version));
+        return res.writeHead(200, { 'Content-Type': record.mime, 'X-Content-Type-Options': 'nosniff' }).end(bytes);
       }
       if (url.pathname === '/review' || url.pathname === '/review/source') {
         if (req.method === 'POST') {
@@ -291,12 +324,49 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
         }
         items = mergeManual(items, confirmed);
         if (req.method === 'GET' && url.pathname === '/activities') return respond(200, activityList(items, url.searchParams.get('q')?.trim() ?? '', now()));
-        const [, , activityId, methodId, extra] = url.pathname.split('/');
+        const [, , activityId, methodId, extra, rest] = url.pathname.split('/');
         const item = items.find(item => item.id === activityId);
+        const imageRecords = await readSaved('official-images.json') ?? {};
+        if (req.method === 'POST' && item && methodId === 'images' && extra && !rest) {
+          const imageUrl = item.images.find(url => imageKey(url) === extra);
+          if (!imageUrl) throw new Problem('這張圖不屬於指定活動。', 404);
+          const form = await formData(req);
+          const action = form.get('action');
+          const old = imageRecords[extra];
+          const shop = item.shopImages?.includes(imageUrl);
+          if (!['download', 'select', 'remove', 'recognize', 'confirm'].includes(action) || (shop && ['recognize', 'confirm'].includes(action))) {
+            throw new Problem('這張圖片使用原圖規則。');
+          }
+          const record = { ...old, url: imageUrl, selected: old?.selected ?? Boolean(shop) };
+          if (action !== 'remove' && (!record.version || action === 'download')) {
+            const { bytes, mime, version } = await downloadImage(imageUrl);
+            if (version !== record.version) {
+              delete record.recognition;
+              delete record.appearance;
+            }
+            await save('image-' + version, bytes);
+            Object.assign(record, { mime, version });
+          }
+          if (action === 'select' || action === 'remove') record.selected = action === 'select';
+          if (action === 'confirm') {
+            const appearance = form.get('appearance')?.trim() ?? '';
+            if (appearance.length > 100) throw new Problem('獎勵名稱過長。');
+            record.appearance = appearance;
+          }
+          imageRecords[extra] = record;
+          await save('official-images.json', JSON.stringify(imageRecords, null, 2));
+          if (action === 'recognize') {
+            record.recognition = await summarizeImage({ bytes: await readFile(join(dir, 'image-' + record.version)), mime: record.mime });
+            await save('official-images.json', JSON.stringify(imageRecords, null, 2));
+          }
+          const methods = await readSaved('activity-methods.json');
+          return respond(200, activityDetail(item, now(), methods?.snapshot === saved.snapshot ? methods.methods : {}, '已更新官方圖片。', imageRecords)
+            .replace('<details id="image-library">', '<details id="image-library" open>'));
+        }
         if (!item || extra !== undefined) throw new Problem('找不到活動。', 404);
         const savedMethods = await readSaved('activity-methods.json');
         const summaries = savedMethods?.snapshot === saved.snapshot ? savedMethods.methods : {};
-        if (req.method === 'GET' && !methodId) return respond(200, activityDetail(item, now(), summaries));
+        if (req.method === 'GET' && !methodId) return respond(200, activityDetail(item, now(), summaries, '', imageRecords));
         const target = item.methods.find(method => method.id === methodId && method.kind === 'method');
         if (req.method === 'POST' && target) {
             const sources = methodContext(item, target);
