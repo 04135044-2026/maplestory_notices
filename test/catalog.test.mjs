@@ -74,6 +74,38 @@ test('模板區分子活動，改標題與換順序後保留識別，未知版�
   assert.throws(() => catalogFromSnapshot('<main><h1>未知公告</h1></main>'), /拆分待確認/);
 });
 
+test('活動筆記分開呈現參加、開領和領獎期限，台灣時間邊界不猜時刻', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'maple-periods-'));
+  const snapshot = '19129-periods.html';
+  const fixture = page(heading('慶典活動', 20) + stress + chair +
+    paragraph('開領時間：2026/12/02 10:00') + paragraph('領獎期限：2026/12/03 23:59'));
+  await writeFile(join(dir, snapshot), fixture);
+  await writeFile(join(dir, 'activity-source.json'), JSON.stringify({ snapshot }));
+  let time;
+  const server = website({ dir, now: () => new Date(time) });
+  try {
+    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+    const root = 'http://127.0.0.1:' + server.address().port;
+    const [stressItem, chairItem] = catalogFromSnapshot(fixture);
+    const get = async (item, date) => {
+      time = date;
+      return (await fetch(root + '/activities/' + item.id)).text();
+    };
+    assert.match(await get(stressItem, '2026-11-03T23:59:00+08:00'), /尚未開始/);
+    const edge = await get(stressItem, '2026-11-04T00:00:00+08:00');
+    assert.match(edge, /時間待確認/);
+    assert.match(edge, /2026\/11\/04/);
+    assert.match(edge, /<dt>領獎期限<\/dt><dd>公告未載明/);
+    assert.match(await get(stressItem, '2026-11-05T00:00:00+08:00'), /進行中/);
+    assert.match(await get(chairItem, '2026-12-02T09:59:00+08:00'), /尚未開領/);
+    assert.match(await get(chairItem, '2026-12-02T10:01:00+08:00'), /仍可領獎/);
+    assert.match(await get(chairItem, '2026-12-04T00:00:00+08:00'), /已結束/);
+  } finally {
+    if (server.listening) await new Promise(resolve => server.close(resolve));
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test('從活動入口核對取得方法，Gemini 只收到指定方法的適用來源', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'maple-catalog-'));
   const snapshot = '19129-test.html';

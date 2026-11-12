@@ -5,6 +5,7 @@ import { activity, extract, fetchNotice, fields, gemini, method, official, Probl
 import { catalogFromSnapshot, methodContext, methodFacts, methodFields, summarizeMethod, validateMethod } from './catalog.mjs';
 import { manualActivity, mergeManual, reviewDocument } from './review.mjs';
 import { fetchOfficialImage, imageKey, recognizeImage } from './images.mjs';
+import { activityState, periodText, timeline } from './periods.mjs';
 
 const escape = value => String(value).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]);
 const link = '<a href="' + official + '" target="_blank" rel="noopener noreferrer">查看官方公告 ↗</a>';
@@ -91,14 +92,16 @@ function activityList(activities, query, now, pending = false) {
     '<form><label for="q">活動名稱</label> <input id="q" name="q" value="' + escape(query) +
     '"> <button>搜尋</button></form>' +
     (entries.length ? entries.map(item => {
-      const time = timing(item.dates, now);
+      const periods = timeline(item);
       return '<article><h2><a href="/activities/' + item.id + '">' + escape(item.title) + '</a></h2><p>' +
-        (item.groupTitle ? escape(item.groupTitle) + ' · ' : '') + time.status + ' · ' + time.text + '</p></article>';
+        (item.groupTitle ? escape(item.groupTitle) + ' · ' : '') + activityState(periods, now) + ' · ' + escape(periodText(periods.participation)) + '</p></article>';
     }).join('') : '<p>查無符合的活動。</p>'));
 }
 
 function activityDetail(item, now, summaries = {}, status = '', imageRecords = {}) {
-  const time = timing(item.dates, now);
+  const periods = timeline(item);
+  const showPeriod = (label, period) => '<dt>' + label + '</dt><dd>' + escape(periodText(period)) +
+    (period.source ? ' <a href="#' + period.source.id + '">查看依據</a>' : '') + '</dd>';
   const cite = source => source ? escape(source.text) + ' <a href="#' + source.id + '">查看依據</a>' : '未載明／待確認';
   const facts = (label, sources) => '<dt>' + label + '</dt>' +
     (sources.length ? sources.map(source => '<dd>' + cite(source) + '</dd>').join('') : '<dd>未載明／待確認</dd>');
@@ -119,7 +122,14 @@ function activityDetail(item, now, summaries = {}, status = '', imageRecords = {
     const { steps, rewards, costs, chances, limits } = methodFacts(item, method);
     const rewardLabel = chances.some(source => source.text.includes('可能獲得')) ? '可能獎勵' : '獎勵';
     const shortRewards = rewards.filter(source => !source.text.includes('\n'));
+    const methodPeriods = timeline(item, method);
+    const ownPeriods = [
+      ['參加期間', 'participation'], ['開領時間', 'opening'], ['領獎期限', 'claim'],
+    ].filter(([, key]) => methodPeriods[key].source?.id !== periods[key].source?.id);
     return '<article id="' + method.id + '"><h2>' + escape(method.title) + '</h2><dl>' +
+      (ownPeriods.length ? '<dt>方法狀態</dt><dd>' + activityState(methodPeriods, now) + '</dd>' : '') +
+      ownPeriods.map(([label, key]) => showPeriod(label, methodPeriods[key])).join('') +
+      (methodPeriods.resets.length ? facts('重置規則', methodPeriods.resets) : '') +
       facts('第一步', steps ? [steps] : []) + facts(rewardLabel, shortRewards) + facts('重要限制', limits) +
       facts('成本及付費條件', costs) +
       facts('機率', chances.filter(source => /機率/.test(source.text))) +
@@ -132,13 +142,12 @@ function activityDetail(item, now, summaries = {}, status = '', imageRecords = {
         .map(source => '<pre>' + cite(source) + '</pre>').join('') + '</details></article>';
   }).join('');
   return page(item.title, '<nav><a href="/activities">← 全部活動</a></nav><h1>' + escape(item.title) + '</h1><p>' +
-    time.status + ' · ' + link + '</p>' + (status ? '<p role="status">' + escape(status) + '</p>' : '') +
+    activityState(periods, now) + ' · ' + link + '</p>' + (status ? '<p role="status">' + escape(status) + '</p>' : '') +
     '<dl><dt>參加資格</dt><dd>' + cite(item.eligibility) +
     (item.sharedEligibility && item.sharedEligibility.text !== item.eligibility?.text
       ? '</dd><dd>版本共用資格 · ' + cite(item.sharedEligibility) : '') +
-    '</dd><dt>參加期間</dt><dd>' + time.text + (item.date ? ' <a href="#' + item.date.id + '">查看依據</a>' : '') +
-    '</dd><dt>領獎期限</dt><dd>' + cite(item.local.find(source => /(?:領獎|領取)(?:期限|期間|截止)/.test(source.text))) +
-    '</dd></dl>' + sections + imagesFor(item.images) +
+    '</dd>' + showPeriod('參加期間', periods.participation) + showPeriod('開領時間', periods.opening) +
+    showPeriod('領獎期限', periods.claim) + '</dl>' + sections + imagesFor(item.images) +
     '<h2>官方公告段落</h2>' + item.sources.map(source => '<article id="' + source.id + '"><small>' +
       escape(source.scope) + '</small><pre>' + escape(source.text) + '</pre></article>').join('') +
     '<details id="image-library"><summary>官方圖片來源與選圖</summary>' +
