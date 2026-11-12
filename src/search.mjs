@@ -35,8 +35,8 @@ export function activityRewards(item, method) {
         if (/^\d+$/.test(row.at(-1))) add(row.at(-2), row.at(-1), source.id);
       }
     } else {
-      for (const match of source.text.matchAll(/(?:可(?:追加)?(?:領取|獲得)|取得)[^。；\n「]{0,15}「([^」]+)」/g)) {
-        add(match[1], null, source.id, undefined, match[0]);
+      for (const match of source.text.matchAll(/(?:可(?:追加)?(?:領取|獲得)|並獲得|會獲得|取得)([^。；\n「]{0,15})「([^」]+)」/g)) {
+        if (!match[1].includes('狩獵技能')) add(match[2], match[1].match(/(\d+)\s*個/)?.[1], source.id, undefined, match[0]);
       }
     }
   }

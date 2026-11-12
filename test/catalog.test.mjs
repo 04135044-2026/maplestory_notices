@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { website } from '../src/site.mjs';
 import { catalogFromSnapshot } from '../src/catalog.mjs';
+import { timeline } from '../src/periods.mjs';
 
 const heading = (title, size) => '<p style="font-size:' + size + 'pt;font-weight:700">【' + title + '】</p>';
 const paragraph = text => '<p>' + text + '</p>';
@@ -44,6 +45,7 @@ test('未知模板的原文經人工確認後可查閱，且只整理已選區�
   try {
     let root = await start();
     assert.equal((await fetch(root + '/activities')).status, 422);
+    await writeFile(join(dir, 'activity-catalog.json'), JSON.stringify({ snapshot: 'old.html', items: catalogFromSnapshot(html) }));
     const review = await (await fetch(root + '/review')).text();
     assert.match(review, /不相干活動/);
     const fingerprint = review.match(/name="fingerprint" value="([^"]+)"/)[1];
@@ -56,6 +58,10 @@ test('未知模板的原文經人工確認後可查閱，且只整理已選區�
     const detail = await (await fetch(root + saved.headers.get('location'))).text();
     assert.match(detail, /確認的方法/);
     assert.doesNotMatch(detail, /不相干活動/);
+    const listing = await (await fetch(root + '/activities')).text();
+    assert.match(listing, /人工活動/);
+    assert.match(listing, /三眼章魚直火燒烤/);
+    assert.match(listing, /新來源拆分待確認/);
     const action = detail.match(/action="(\/activities\/[^"]+)"/)[1];
     assert.equal((await fetch(root + action, { method: 'POST', redirect: 'manual' })).status, 303);
     assert.equal(calls, 1);
@@ -63,6 +69,16 @@ test('未知模板的原文經人工確認後可查閱，且只整理已選區�
     if (server?.listening) await new Promise(resolve => server.close(resolve));
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+test('縮寫日期只在官方共用期間能唯一對應時補年份', () => {
+  const date = { id: 'local', text: '活動日期：12/25 ～ 01/05' };
+  const version = { id: 'shared', scope: '版本共用期間', text: '2026/12/20 ～ 2027/01/10' };
+  const item = { date, sources: [version, date], local: [date] };
+  assert.equal(timeline(item).participation.start.date, '2026-12-25');
+  assert.equal(timeline(item).participation.end.date, '2027-01-05');
+  date.text = '活動日期：11/01 ～ 11/05';
+  assert.equal(timeline(item).participation.start, undefined);
 });
 
 test('模板區分子活動，改標題與換順序後保留識別，未知版型需確認', () => {
