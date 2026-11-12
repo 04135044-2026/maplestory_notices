@@ -62,7 +62,8 @@ test('匯入官方公告後可從首頁搜尋獎勵，重開仍可查看獎勵�
       const note = await (await fetch(url + '/note')).text();
       assert.match(note, /狩獵500隻後從介面領取/);
       assert.match(note, /未載明獨立領獎期限/);
-      assert.match(note, /查看官方公告/);
+      assert.match(note, /<nav class="activity-nav">[^\n]*>官方公告 ↗<\/a><\/nav>/);
+      assert.equal((note.match(/href="https:\/\/beanfun-event\.beanfun\.com\/EventAD_Mobile\/EventAD\?eventAdId=19129"/g) ?? []).length, 1);
       await new Promise(resolve => server.close(resolve));
     }
   } finally {
