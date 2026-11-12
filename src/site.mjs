@@ -5,6 +5,7 @@ import { activity, extract, fetchNotice, fields, gemini, method, official, Probl
 import { catalogFromSnapshot, methodContext, methodFacts, methodFields, summarizeMethod, validateMethod } from './catalog.mjs';
 import { manualActivity, mergeManual, reviewDocument } from './review.mjs';
 import { fetchOfficialImage, imageKey, recognizeImage } from './images.mjs';
+import { fingerprint, methodFingerprint } from './incremental.mjs';
 import { activityState, periodText, timeline } from './periods.mjs';
 import { rewardTypes, searchCatalog, statuses } from './search.mjs';
 
@@ -191,7 +192,7 @@ function home(saved, query, now, status, hasSnapshot = Boolean(saved), listing) 
     '<details' + (status ? ' open' : '') + '><summary>公告管理</summary>' +
     (status ? '<p>' + escape(status) + '</p>' : '') +
     (saved?.capturedAt ? '<p>已保存摘要：' + escape(new Date(saved.capturedAt).toLocaleString('zh-TW', { timeZone: 'Asia/Taipei' })) + '（台灣時間）</p>' : '') +
-    (hasSnapshot ? '<p><a href="/review">檢視與調整公告拆分</a></p>' : '') +
+    (hasSnapshot ? '<p><a href="/review">檢視與調整公告拆分</a> · <a href="/updates">來源與摘要更新</a></p>' : '') +
     '<form method="post" action="/import"><button>匯入並整理公告 19129</button></form></details>');
 }
 
@@ -424,6 +425,58 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
       if (req.method === 'POST' && req.headers['sec-fetch-site'] && !['same-origin', 'none'].includes(req.headers['sec-fetch-site'])) {
         throw new Problem('請從本機網站操作。', 403);
       }
+      if (url.pathname === '/updates') {
+        const source = await readSaved('activity-source.json') ?? await readSaved();
+        if (req.method === 'POST') {
+          if (importing) throw new Problem('公告正在處理中。', 409);
+          importing = methodLocked = true;
+          const html = await fetchSource();
+          if (!html.trim()) throw new Problem('官網回傳空白公告。');
+          const checkedAt = now().toISOString();
+          const previous = source ? await readFile(join(dir, source.snapshot), 'utf8') : null;
+          const snapshot = previous === html ? source.snapshot : '19129-' + checkedAt.replace(/[:.]/g, '-') + '.html';
+          if (previous !== html) await save(snapshot, html);
+          await save('activity-source.json', JSON.stringify({ snapshot, checkedAt }));
+          const records = await readSaved('official-images.json') ?? {};
+          const changed = [];
+          const failed = [];
+          for (const [key, record] of Object.entries(records)) {
+            if (!record.version || !html.includes(record.url)) continue;
+            try {
+              const image = await downloadImage(record.url);
+              if (image.version === record.version) continue;
+              await save('image-' + image.version, image.bytes);
+              records[key] = { url: record.url, version: image.version, mime: image.mime, selected: record.selected };
+              changed.push(key);
+            } catch (error) { if (!(error instanceof Problem)) throw error; failed.push(key); }
+          }
+          if (changed.length) await save('official-images.json', JSON.stringify(records));
+          await save('source-update.json', JSON.stringify({ changed: previous !== html, images: changed.length, failed: failed.length }));
+          return res.writeHead(303, { Location: '/updates' }).end();
+        }
+        if (req.method !== 'GET') throw new Problem('操作不支援。', 405);
+        const latest = await readSaved('source-update.json');
+        const records = await readSaved('official-images.json') ?? {};
+        const savedMethods = (await readSaved('activity-methods.json'))?.methods ?? {};
+        let body = '';
+        if (source) {
+          try {
+            const items = mergeManual(await readCatalog(source), await confirmedItems(source));
+            body = items.flatMap(item => item.methods.filter(target => target.kind === 'method').map(target => {
+              const previous = savedMethods[target.id];
+              const state = !previous ? '尚未整理' : previous.inputKey === methodFingerprint(item, target, records) ? '摘要已是最新' : '摘要待重整 · 舊摘要仍可讀';
+              return '<li><a href="/activities/' + item.id + '#' + target.id + '">' + escape(item.title + ' › ' + target.title) +
+                '</a> · ' + state + (previous?.at ? ' · 摘要完成 ' + escape(previous.at) : '') +
+                (state === '摘要已是最新' ? '' : '<form method="post" action="/activities/' + item.id + '/' + target.id + '"><button>整理這個方法</button></form>') + '</li>';
+            })).join('');
+          } catch (error) { if (!(error instanceof Problem)) throw error; body = '<li>' + escape(error.message) + ' <a href="/review">檢視拆分</a></li>'; }
+        }
+        return respond(200, page('來源與摘要更新', '<nav><a href="/">← 首頁</a></nav><h1>來源與摘要更新</h1>' +
+          '<p>來源取得 ' + escape(source?.checkedAt ?? source?.capturedAt ?? '尚未記錄') + '</p>' +
+          (latest ? '<p>' + (latest.changed ? '來源已更新' : '公告文字未變') + ' · 已變更圖片 ' + latest.images +
+            ' 張 · 無法查驗圖片 ' + latest.failed + ' 張</p>' : '') +
+          '<form method="post"><button>重新取得官方來源</button></form><ul>' + body + '</ul>'));
+      }
       if (req.method === 'POST' && url.pathname === '/import') {
         if (importing) throw new Problem('公告正在整理中。', 409);
         importing = true;
@@ -435,8 +488,13 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
           const snapshot = '19129-' + capturedAt.replace(/[:.]/g, '-') + '.html';
           await save(snapshot, html);
           sourceSaved = true;
-          await save('activity-source.json', JSON.stringify({ snapshot }));
+          await save('activity-source.json', JSON.stringify({ snapshot, checkedAt: capturedAt }));
           const notice = extract(html);
+          const previous = await readSaved();
+          if (previous?.model?.model && fingerprint(previous.notice) === fingerprint(notice) && previous.model.model === process.env.GEMINI_MODEL) {
+            await save('status.json', JSON.stringify('公告內容未變，沿用已保存摘要。'));
+            return respond(200, home(previous, '核心寶石', now()));
+          }
           const generated = await summarize(notice);
           const summary = validate(generated?.result ?? generated, notice);
           const saved = { notice, summary, snapshot, capturedAt, model: generated?.metadata ?? null };
@@ -598,10 +656,14 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
         }
         if (!item || extra !== undefined) throw new Problem('找不到活動。', 404);
         const savedMethods = await readSaved('activity-methods.json');
-        const summaries = savedMethods?.snapshot === saved.snapshot ? savedMethods.methods : {};
+        const summaries = savedMethods?.methods ?? {};
         if (req.method === 'GET' && !methodId) return respond(200, activityDetail(item, now(), summaries, pending, imageRecords));
         const target = item.methods.find(method => method.id === methodId && method.kind === 'method');
         if (req.method === 'POST' && target) {
+            const inputKey = methodFingerprint(item, target, imageRecords);
+            if (summaries[target.id]?.inputKey === inputKey) {
+              return res.writeHead(303, { Location: '/activities/' + item.id + '#' + target.id }).end();
+            }
             const sources = methodContext(item, target);
             const generated = await summarizeActivityMethod({ title: item.title, method: target.title, sources });
             const known = methodFacts(item, target);
@@ -610,7 +672,7 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
               steps: known.steps ? [known.steps.id] : [],
               rewards: known.rewards.map(source => source.id),
             });
-            const updated = { ...summaries, [target.id]: { facts, model: generated.metadata, at: now().toISOString() } };
+            const updated = { ...summaries, [target.id]: { facts, inputKey, model: generated.metadata, at: now().toISOString() } };
             await save('activity-methods.json', JSON.stringify({ snapshot: saved.snapshot, methods: updated }, null, 2));
             res.writeHead(303, { Location: '/activities/' + item.id + '#' + target.id }).end();
             return;
