@@ -1,4 +1,4 @@
-import { splitNotice } from './segmentation.mjs';
+import { dateLabel, eligibilityLabel, splitNotice } from './segmentation.mjs';
 import { generateSummary, Problem } from './notice.mjs';
 
 export const methodFields = {
@@ -19,7 +19,7 @@ export async function summarizeMethod({ title, method, sources }) {
   );
 }
 
-export function validateMethod(result, sources) {
+export function validateMethod(result, sources, expected) {
   const ids = new Set(sources.map(source => source.id));
   const entries = Object.keys(methodFields).map(key => {
     const facts = result?.[key];
@@ -27,13 +27,13 @@ export function validateMethod(result, sources) {
       typeof fact?.text === 'string' && fact.text.trim() && fact.text.length <= 1000 && ids.has(fact.source))) {
       throw new Problem('Gemini 結果格式或來源有誤，已保留原文。');
     }
+    if (expected[key]?.length && !facts.some(fact => expected[key].includes(fact.source))) {
+      throw new Problem('Gemini 結果漏掉已知欄位，已保留原文。');
+    }
     return [key, facts];
   });
   return Object.fromEntries(entries);
 }
-
-const dateLabel = /^活動(?:日期|時間)[：:]/;
-const eligibilityLabel = /^(?:活動資格|參加條件)[：:]/;
 
 export function catalogFromSnapshot(html) {
   const activities = splitNotice(html);
@@ -60,9 +60,9 @@ export function methodFacts(activity, method) {
   const sources = methodContext(activity, method).filter(source =>
     method.sourceIds.includes(source.id) || source.scope === '活動共用條件與說明');
   const body = sources.filter(source => !dateLabel.test(source.text) && !eligibilityLabel.test(source.text));
-  const steps = body.find(source => /接受任務|對話|選擇|進入/.test(source.text));
-  const rewards = body.filter(source => /可領取紀念椅子|可能獲得的獎勵|^分類\s*\|\s*獎勵/.test(source.text));
-  const limits = body.filter(source => /一天.*次|一週.*次|每天.*次|每週.*次|最多/.test(source.text) && !source.text.includes('\n'));
+  const steps = body.find(source => /接受任務|對話|選擇|進入|挑戰/.test(source.text));
+  const rewards = body.filter(source => /(?:領取|獲得).*獎勵|可領取紀念椅子|可追加領取|^分類\s*\|\s*獎勵/.test(source.text));
+  const limits = body.filter(source => /一天.*次|一週.*次|每天.*次|每週.*(?:次|只能)|最多|限時|初始化|重置|每局.*次/.test(source.text) && !source.text.includes('\n'));
   const costs = body.filter(source => /花費|消耗|捐獻|使用楓幣|使用.*點數/.test(source.text) && !source.text.includes('\n'));
   const chances = body.filter(source => /機率|機會獲得|可能獲得/.test(source.text));
   return { steps, rewards, limits, costs, chances };

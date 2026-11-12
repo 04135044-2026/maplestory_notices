@@ -42,7 +42,14 @@ test('從活動入口核對取得方法，Gemini 只收到指定方法的適用�
       assert.ok(sources.some(source => source.text.includes('內拉')));
       assert.ok(sources.some(source => source.scope === '共用注意事項'));
       assert.ok(sources.every(source => !source.text.includes('老手設計師') && !source.text.includes('權達開')));
-      return { result: { eligibility: [], steps: [], rewards: [], costs: [], probability: [], payment: [], limits: [] } };
+      const fact = match => {
+        const source = sources.find(source => source.text.includes(match));
+        return { text: source.text, source: source.id };
+      };
+      return { result: {
+        eligibility: [fact('見習者')], steps: [fact('內拉')], rewards: [fact('紀念椅子')],
+        costs: [], probability: [], payment: [], limits: [],
+      } };
     },
   });
   try {

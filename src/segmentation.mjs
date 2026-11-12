@@ -3,6 +3,8 @@ import { createHash } from 'node:crypto';
 import { official, Problem } from './notice.mjs';
 
 export const TEMPLATE = 'beanfun-eventad-19129-hierarchy-v1';
+export const dateLabel = /^活動(?:日期|時間)[：:]/;
+export const eligibilityLabel = /^(?:活動資格|參加條件)[：:]/;
 const clean = value => value.replace(/\u00a0/g, ' ').replace(/\s+/g, ' ').trim();
 const ownAnchor = section => [...section.images].sort().join('\n') || [...section.texts].sort().join('\n');
 
@@ -11,6 +13,9 @@ function nodeText($, element) {
   copy.find('br').replaceWith('\n');
   if (element.tagName === 'table') {
     return copy.find('tr').map((_, row) => $(row).find('th,td').map((__, cell) => clean($(cell).text())).get().join(' | ')).get().join('\n');
+  }
+  if (['ul', 'ol'].includes(element.tagName)) {
+    return copy.children('li').map((_, item) => clean($(item).text())).get().join('\n');
   }
   return clean(copy.text());
 }
@@ -63,8 +68,12 @@ export function splitNotice(html) {
   const body = bodies.first();
   const bodyContent = body.children('span').length === 1 ? body.children('span').first() : body;
   const children = bodyContent.children().toArray();
+  if (bodyContent.contents().toArray().some(node => node.type === 'text' && clean(node.data))) {
+    pending('正文出現沒有段落容器的文字，拆分待確認。');
+  }
   const headers = [];
   children.forEach((node, index) => {
+    if (node.tagName === 'h3' && index !== 0) pending('正文出現未驗證的標題層級，拆分待確認。');
     if (!['h3', 'p', 'table', 'hr', 'ul', 'ol'].includes(node.tagName) && (clean($(node).text()) || $(node).find('img').length)) {
       pending('正文出現尚未支援的巢狀內容，已保留來源，避免漏掉活動。');
     }
@@ -85,7 +94,7 @@ export function splitNotice(html) {
   }
   let ordinal = 0;
   function paragraphs(nodes, scope) {
-    return nodes.filter(node => ['p','table','ul','ol'].includes(node.tagName)).flatMap(node => {
+    return nodes.filter(node => ['p','table','ul','ol','li'].includes(node.tagName)).flatMap(node => {
       const text = nodeText($, node);
       return text ? [{ id: `P${String(++ordinal).padStart(3, '0')}`, scope, text }] : [];
     });
@@ -97,13 +106,13 @@ export function splitNotice(html) {
   sharedSources.push(...paragraphs(intro, '版本共用條件與說明'));
   const noteDiv = content.children('div').filter((_, div) => clean($(div).children('h3').text()) === '注意事項').first();
   if (!dateDiv.length || !noteDiv.length) pending('共用期間或注意事項容器缺失，需確認頁面模板。');
-  sharedSources.push(...paragraphs(noteDiv.find('p,li').toArray(), '共用注意事項'));
+  sharedSources.push(...paragraphs(noteDiv.children('p,ul,ol').toArray(), '共用注意事項'));
   const sharedImages = imagesIn(intro);
   const sections = headers.map((header, index) => {
     const nodes = children.slice(header.index + 1, headers[index + 1]?.index ?? children.length);
     const texts = nodes.filter(node => ['p','table','ul','ol'].includes(node.tagName)).map(node => nodeText($, node)).filter(Boolean);
-    const date = texts.some(text => /^活動(?:日期|時間)[：:]/.test(text));
-    const qualification = texts.some(text => /^(?:活動資格|參加條件)[：:]/.test(text));
+    const date = texts.some(text => dateLabel.test(text));
+    const qualification = texts.some(text => eligibilityLabel.test(text));
     if (date !== qualification) pending(`「${header.title}」的獨立期間／資格不完整，拆分待確認。`);
     return { ...header, nodes, date, qualification, texts, images: imagesIn(nodes) };
   });
