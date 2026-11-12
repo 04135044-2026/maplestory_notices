@@ -12,6 +12,7 @@ import { activityState, periodText, timeline } from './periods.mjs';
 import { rewardTypes, searchCatalog, statuses } from './search.mjs';
 import { watchKey, watchVersion } from './watch.mjs';
 import { editChanged, editEvidence, editKey } from './manual-edits.mjs';
+import { calendarActivity, calendarMonth, exportCalendar } from './calendar.mjs';
 import { answerPlayer, compareMethods, playerAssistant, searchWithAgent } from './player-assist.mjs';
 import { announcementUrl, collectAnnouncements, discoveryWindow, officialAnnouncement, officialPages, saveAnnouncement } from './discovery.mjs';
 import { sourceTracking } from './tracking.mjs';
@@ -58,6 +59,13 @@ main :target{scroll-margin-top:4rem}
 .site-tabs a{padding:.35rem .65rem;border-radius:.35rem;text-decoration:none}
 .site-tabs a:hover,.site-tabs a:focus-visible{text-decoration:underline}
 .site-tabs a[aria-current=page]{background:#e0ede4;font-weight:700}
+.calendar-scroll{overflow-x:auto}
+.calendar-grid{width:100%;min-width:44rem;table-layout:fixed;border-collapse:collapse}
+.calendar-grid td,.calendar-grid th{border:1px solid #cddbd3;padding:.35rem;vertical-align:top}
+.calendar-grid td{height:3rem;background:white;overflow-wrap:anywhere}
+.calendar-grid ul{margin:.25rem 0;padding:0;list-style:none;font-size:.82rem}
+.calendar-grid li{padding:.18rem 0;border-top:1px solid #dce4de}
+.calendar-grid small{display:block}
 `;
 const page = (title, body) => '<!doctype html><html lang="zh-Hant"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>' + escape(title) + '</title><style>' + style + layout + '</style><main>' + body + '</main></html>';
 const imageActions = `
@@ -227,11 +235,49 @@ function catalogResults(entries, saved, watches, back = '/') {
 }
 
 function primaryTabs(active) {
-  return '<nav class="site-tabs" aria-label="主要分頁">' + [['/', '活動與獎勵'], ['/watch', '我的關注'], ['/manage', '公告管理']]
+  return '<nav class="site-tabs" aria-label="主要分頁">' + [['/', '活動與獎勵'], ['/watch', '我的關注'], ['/calendar', '活動日曆'], ['/manage', '公告管理']]
     .map(([href, label]) => '<a href="' + href + '"' + (href === active ? ' aria-current="page"' : '') + '>' + label + '</a>').join('') + '</nav>';
 }
 
 const managementBack = '<a href="/manage">← 上一頁</a>';
+
+function calendarPage(activities, month, message, selected = []) {
+  const date = new Date(month + '-01T00:00:00Z');
+  const nearby = offset => {
+    const shifted = new Date(date);
+    shifted.setUTCMonth(shifted.getUTCMonth() + offset);
+    return shifted.toISOString().slice(0, 7);
+  };
+  const events = new Map();
+  for (const { item, dates } of activities) {
+    for (const entry of dates.filter(entry => entry.point?.date.startsWith(month))) {
+      const day = entry.point.date;
+      if (!events.has(day)) events.set(day, []);
+      events.get(day).push({ item, ...entry });
+    }
+  }
+  const cells = calendarMonth(month).map(week => '<tr>' + week.map(day => day
+    ? '<td><time datetime="' + day + '">' + Number(day.slice(-2)) + '</time><ul>' +
+      (events.get(day) ?? []).map(({ item, label, method }) => '<li><small>' + label + ' · ' + escape(familyTitle(item)) +
+        '</small><a href="/activities/' + item.id + (method ? '#' + method.id : '') + '">' +
+        escape(item.title + (method ? ' › ' + method.title : '')) + '</a></li>').join('') + '</ul></td>' : '<td></td>').join('') + '</tr>').join('');
+  const options = activities.map(({ item, dates }) => {
+    const known = dates.filter(entry => entry.point).length;
+    const unavailable = dates.filter(entry => !entry.point);
+    return '<li><label><input type="checkbox" name="activity" value="' + item.id + '"' + (selected.includes(item.id) ? ' checked' : '') +
+      (known ? '' : ' disabled') + '> ' + escape(familyTitle(item) + ' › ' + item.title) + ' · ' + known + ' 項可匯出</label>' +
+      (unavailable.length ? '<details><summary>無法匯出的日期</summary><ul>' + unavailable.map(entry => '<li>' +
+        escape((entry.method ? entry.method.title + ' · ' : '') + entry.label + ' · ' +
+          (entry.source?.text ? '日期待確認 · ' + entry.source.text : '公告未載明日期')) + '</li>').join('') + '</ul></details>' : '') + '</li>';
+  }).join('');
+  return page('活動日曆', primaryTabs('/calendar') + '<h1>活動日曆</h1><p><a href="/calendar?month=' + nearby(-1) +
+    '">← 上個月</a> · <strong>' + month + '</strong> · <a href="/calendar?month=' + nearby(1) + '">下個月 →</a></p>' +
+    '<div class="calendar-scroll"><table class="calendar-grid" aria-label="' + month + ' 活動日曆"><thead><tr>' +
+    [...'一二三四五六日'].map(day => '<th scope="col">' + day + '</th>').join('') + '</tr></thead><tbody>' + cells + '</tbody></table></div>' +
+    '<h2>選取活動匯出</h2>' + (message ? '<p role="alert">' + escape(message) + '</p>' : '') +
+    '<form method="post" action="/calendar"><input type="hidden" name="month" value="' + month + '"><ul>' + options +
+    '</ul><button>下載 .ics</button></form>');
+}
 
 function managementPage(saved, status, hasSnapshot) {
   return page('公告管理', primaryTabs('/manage') + '<h1>公告管理</h1>' +
@@ -894,6 +940,24 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
           (entries.length ? catalogResults(entries, null, watches, '/watch') : '<p>目前沒有可查看的關注項目。</p>') +
           missing.map(([id, record]) => '<p>' + escape(record.label) + ' · 來源待確認</p><form method="post">' +
             '<input type="hidden" name="id" value="' + escape(id) + '"><button>取消關注</button></form>').join('')));
+      }
+      if (url.pathname === '/calendar') {
+        if (!['GET', 'POST'].includes(req.method)) throw new Problem('操作不支援。', 405);
+        const params = req.method === 'POST' ? await formData(req) : url.searchParams;
+        const requested = params.get('month') ?? '';
+        const today = new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Taipei' }).format(now());
+        const month = /^(?:19|20|21)\d{2}-(?:0[1-9]|1[0-2])$/.test(requested) ? requested : today.slice(0, 7);
+        const items = await browsableItems(await readSaved('activity-source.json') ?? await readSaved());
+        const activities = items.map(calendarActivity);
+        if (req.method === 'GET') return respond(200, calendarPage(activities, month));
+        const ids = [...new Set(params.getAll('activity'))];
+        const selected = activities.filter(({ item }) => ids.includes(item.id));
+        if (!ids.length || selected.length !== ids.length || !selected.some(({ dates }) => dates.some(entry => entry.point))) {
+          return respond(422, calendarPage(activities, month, '請勾選至少一個有確定日期的活動。', ids));
+        }
+        return res.writeHead(200, { 'Content-Type': 'text/calendar; charset=utf-8',
+          'Content-Disposition': 'attachment; filename="maplestory-activities.ics"', 'X-Content-Type-Options': 'nosniff' })
+          .end(exportCalendar(selected, now(), 'http://' + req.headers.host));
       }
       if (req.method === 'GET' && url.pathname === '/manage') {
         const saved = await readSaved();
