@@ -10,6 +10,8 @@ import { CODEX_MODEL, createCodexGenerator } from './codex.mjs';
 import { fetchCorrection, officialCorrectionUrl, verifiedSource, withCorrections } from './corrections.mjs';
 import { activityState, periodText, timeline } from './periods.mjs';
 import { rewardTypes, searchCatalog, statuses } from './search.mjs';
+import { answerPlayer, compareMethods, playerAssistant, searchWithAgent } from './player-assist.mjs';
+import { announcementUrl, collectAnnouncements, discoveryWindow, officialAnnouncement, officialPages, saveAnnouncement } from './discovery.mjs';
 
 const escape = value => String(value).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]);
 const link = '<a href="' + official + '" target="_blank" rel="noopener noreferrer">查看官方公告 ↗</a>';
@@ -39,13 +41,21 @@ main :target{scroll-margin-top:4rem}
 .source-table table{border-collapse:collapse;width:100%;font-size:.95rem}
 .source-table td,.source-table th{border:1px solid #bccbc1;padding:.45rem .6rem;vertical-align:top;white-space:pre-line;min-width:6em}
 .source-table th,.source-table tr:first-child{background:#edf3ee}
+.player-tools{display:flex;flex-wrap:wrap;align-items:center;gap:.75rem;margin:1rem 0}
+.player-question{display:grid;gap:.5rem}
+.player-question textarea{box-sizing:border-box;width:100%;font:inherit}
+.player-question button{justify-self:start}
+.comparison{overflow-x:auto}
+.comparison td{min-width:13rem}
+.comparison-select{display:block;width:100%;max-width:100%;font:inherit}
+.evidence-image{display:block;max-width:100%;height:auto}
 `;
 const page = (title, body) => '<!doctype html><html lang="zh-Hant"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>' + escape(title) + '</title><style>' + style + layout + '</style><main>' + body + '</main></html>';
 const imageActions = `
 function revealSource(hash) {
   if (!hash) return;
   const target = document.getElementById(hash.slice(1));
-  const panel = target?.closest('.source-panel, details[data-source-flow]');
+  const panel = target?.closest('.source-panel, details[data-source-flow], #image-library');
   if (panel && !panel.open) {
     panel.open = true;
     target.scrollIntoView();
@@ -83,13 +93,24 @@ document.addEventListener('submit', async event => {
     const newSlot = documentAfter.getElementById(slotId);
     const previousTop = button.getBoundingClientRect().top;
     const wasPreviewing = card.querySelector('.image-preview')?.open;
+    const wasEditing = card.querySelector('.image-note-editor')?.open;
     if (slot && newSlot) {
       slot.replaceChildren(...newSlot.childNodes);
       const original = slot.closest('details[data-source-flow]');
       if (original && slot.firstElementChild) original.open = true;
     }
+    const imageNotes = document.getElementById('verified-image-notes');
+    const newImageNotes = documentAfter.getElementById('verified-image-notes');
+    if (imageNotes && newImageNotes) imageNotes.replaceChildren(...newImageNotes.childNodes);
     card.replaceChildren(...newCard.childNodes);
     if (wasPreviewing && card.querySelector('.image-preview')) card.querySelector('.image-preview').open = true;
+    const editor = card.querySelector('.image-note-editor');
+    if (editor && (wasEditing || button.value === 'recognize')) editor.open = true;
+    const message = documentAfter.querySelector('main > p[role="status"]');
+    if (message) {
+      report.textContent = message.textContent;
+      card.append(report);
+    }
     const next = [...card.querySelectorAll('button')].find(entry => entry.value === button.value ||
       (button.value === 'select' && entry.value === 'remove') || (button.value === 'remove' && entry.value === 'select'));
     if (next) {
@@ -102,6 +123,11 @@ document.addEventListener('submit', async event => {
   }
 });
 `;
+
+const taipeiTimestamp = new Intl.DateTimeFormat('sv-SE', {
+  timeZone: 'Asia/Taipei', dateStyle: 'short', timeStyle: 'medium',
+});
+const formatTimestamp = value => value ? taipeiTimestamp.format(new Date(value)) + '（台北時間）' : '尚未記錄';
 
 function timing(dates, now) {
   if (!dates) return { status: '參加期間待確認', text: '公告日期待確認' };
@@ -161,9 +187,8 @@ function activityGroups(entries, itemOf, render) {
   }).join('');
 }
 
-function catalogResults(items, filters, now, images, saved) {
-  const entries = searchCatalog(items, filters, now, images);
-  if (!entries.length) return '<p>在已收錄的公告 19129 活動及獎勵中找不到符合的結果。</p>';
+function catalogResults(entries, saved) {
+  if (!entries.length) return '<p>在已收錄的公告 19129 及其他已確認來源中找不到符合的結果。</p>';
   return activityGroups(entries, entry => entry.item, ({ item, method: target, reward, state, periods, image }) => {
     const legacy = saved && reward && item.title === activity && target.title === method &&
       matchingRewards(saved.notice, reward.name).some(entry => entry.name === reward.name && entry.quantity === reward.quantity);
@@ -175,54 +200,87 @@ function catalogResults(items, filters, now, images, saved) {
         (reward.group ? ' · ' + escape(reward.group) : '') + (reward.possible ? ' · 可能獎勵' : '') + '</p>' : '') +
       '<p>' + escape(state) + ' · ' + escape(periodText(periods.participation)) + '</p>' +
       (state === '仍可領獎' ? '<p>領獎期限 · ' + escape(periodText(periods.claim)) + '</p>' : '') +
-      '<p>來源 · ' + escape(item.pageTitle) + '（19129）</p>' +
+      '<p>來源 · ' + escape(item.pageTitle) + (item.officialUrl ? '' : '（19129）') + '</p>' +
       (image ? '<img loading="lazy" style="max-width:160px" src="/images/' + image + '" alt="' + escape(reward.name) + '">' :
         reward ? '<p>尚無外觀圖片</p>' : '') +
       '<p><a href="' + href + '">' + (reward ? '查看取得方式 →' : '查看活動 →') + '</a></p></article>';
   });
 }
 
-function home(saved, query, now, status, hasSnapshot = Boolean(saved), listing) {
+function home(saved, query, now, status, hasSnapshot = Boolean(saved), listing, assist) {
   const hasSearch = query || listing?.filters.status || listing?.filters.type;
-  return page('新楓之谷公告懶人包', '<h1>新楓之谷公告懶人包</h1><form method="get"><label for="q">搜尋獎勵或活動</label> <input id="q" name="q" value="' +
+  const entries = listing ? searchCatalog(listing.items, listing.filters, now, listing.images) : [];
+  const offerAssist = listing && query && (!entries.length || entries.length > 8 || assist);
+  let nameResults = listing ? catalogResults(entries, listing.snapshot === saved?.snapshot ? saved : null) :
+    searchResults(saved, query, now);
+  if (assist) nameResults = entries.length || !assist.matches?.length
+    ? '<section><h2>名稱搜尋結果</h2>' + nameResults + '</section>' : '';
+  return page('新楓之谷公告懶人包', '<h1>新楓之谷公告懶人包</h1><form method="get" action="/"><label for="q">搜尋獎勵或活動</label> <input id="q" name="q" value="' +
     escape(query) + '"> ' + (listing ? filterOptions('state', statuses, listing.filters.status, '活動狀態') + ' ' +
       filterOptions('type', rewardTypes, listing.filters.type, '獎勵類型') + ' ' : '') +
-    '<button>搜尋</button>' + (hasSearch ? '<a class="search-home-link" href="/">回首頁</a>' : '') +
-    '</form>' + (listing ? catalogResults(listing.items, listing.filters, now, listing.images,
-      listing.snapshot === saved?.snapshot ? saved : null) : searchResults(saved, query, now)) +
-    (hasSnapshot ? '<p><a href="/activities">查看公告 19129 的全部活動</a></p>' : '') +
+    '<button>搜尋</button>' + (offerAssist ? ' <button formmethod="post" formaction="/assist/search">用 Agent 搜尋</button>' : '') +
+    (hasSearch ? '<a class="search-home-link" href="/">回首頁</a>' : '') + '</form>' +
+    (assist ? '<section><h2>Agent 搜尋結果</h2>' + (assist.error ? '<p role="alert">' + escape(assist.error) + '</p>' :
+      assist.matches.length ? catalogResults(assist.matches) + assistantModel(assist.metadata) :
+        '<p>已收錄的活動與獎勵沒有明確符合的結果。</p>') + '</section>' : '') +
+    nameResults +
+    (hasSnapshot || listing ? '<p><a href="/activities">查看全部已收錄活動</a></p>' : '') +
     '<details' + (status ? ' open' : '') + '><summary>公告管理</summary>' +
     (status ? '<p>' + escape(status) + '</p>' : '') +
     (saved?.capturedAt ? '<p>已保存摘要：' + escape(new Date(saved.capturedAt).toLocaleString('zh-TW', { timeZone: 'Asia/Taipei' })) + '（台灣時間）</p>' : '') +
     (hasSnapshot ? '<p><a href="/review">檢視與調整公告拆分</a> · <a href="/updates">來源與摘要更新</a> · <a href="/corrections">來源關聯與更正</a></p>' : '') +
+    '<p><a href="/discover">探索與回溯官方公告</a></p>' +
     '<form method="post" action="/import"><button>匯入並整理公告 19129</button></form></details>');
 }
 
-function reviewPage(document, automatic, previous, message) {
+function reviewPage(document, automatic, previous, message, route = '/review', officialUrl) {
   const options = automatic.flatMap(item => item.methods.filter(method => method.kind === 'method')
     .map(method => '<option value="' + method.id + '">' + escape(item.title + ' › ' + method.title) + '</option>')).join('');
   return page('檢視公告拆分', '<nav><a href="/">← 首頁</a> · <a href="/activities">查看活動</a></nav><h1>檢視公告拆分</h1>' +
     '<p>' + escape(message) + '</p>' +
     (previous && previous.fingerprint !== document.fingerprint ? '<p role="status">來源已變更，舊人工歸屬需重新核對。</p>' : '') +
-    '<p><a href="/review/source" download>下載完整來源快照</a></p>' +
+    '<p><a href="' + route + '/source" download>下載完整來源快照</a>' +
+    (officialUrl ? ' · <a href="' + escape(officialUrl) + '">官方公告 ↗</a> · <a href="/discover">回公告探索</a>' : '') + '</p>' +
     (previous ? '<p>已保存人工確認：' + previous.entries.map(entry => escape(entry.title + ' › ' + entry.methods[0].title)).join('、') + '</p>' : '') +
     '<form method="post"><input type="hidden" name="fingerprint" value="' + document.fingerprint + '">' +
     '<p><label>要調整的方法 <select name="target"><option value="">新增活動或方法</option>' + options + '</select></label></p>' +
     '<p><label>方法所屬活動 <select name="parent"><option value="">保留目前歸屬，或新增活動</option>' +
     automatic.map(item => '<option value="' + item.id + '">' + escape(item.title) + '</option>').join('') + '</select></label></p>' +
     '<p><label>新活動名稱（新增活動才填） <input name="title" maxlength="100"></label></p><p><label>方法名稱 <input name="method" required maxlength="100"></label></p>' +
-    document.blocks.map(block => '<article><strong>' + block.id + '</strong><pre>' + escape(block.text) + '</pre>' +
+    document.blocks.map(block => '<article><strong>' + block.id + '</strong>' + sourceBody(block) +
       block.images.map((url, index) => '<p><a href="' + escape(url) + '">官方圖片 ' + (index + 1) + '</a></p>').join('') +
       '<label><input type="checkbox" name="own" value="' + block.id + '">方法內容</label> ' +
       '<label><input type="checkbox" name="shared" value="' + block.id + '">適用共用條件</label></article>').join('') +
     '<button>確認並保存拆分</button></form>');
 }
 
-async function formData(req) {
+function discoveryPage(window, registry, message) {
+  const run = registry.run;
+  const labels = { version: '版本公告', routine: '例行公告', related: '相關異動' };
+  const entries = Object.values(registry.entries).sort((a, b) => (b.date ?? '').localeCompare(a.date ?? ''));
+  return page('探索官方公告', '<nav><a href="/">← 首頁</a> · <a href="/activities">查看活動</a></nav><h1>探索官方公告</h1>' +
+    '<p>最近 90 天（台北時間） · ' + window.start + ' 至 ' + window.end + '</p>' +
+    '<form method="post"><button>檢查官方公告列表</button></form>' +
+    '<form method="post" action="/discover/import"><p><label>手動補入官方網址 <input type="url" name="url" required></label> ' +
+    '<button>保存來源</button></p></form>' + (message ? '<p role="status">' + escape(message) + '</p>' : '') +
+    (run ? '<p>上次檢查 · ' + escape(formatTimestamp(run.at)) + ' · ' + run.start + ' 至 ' + run.end +
+      ' · 讀取 ' + run.pages + ' 頁 · 範圍內可讀公告連結 ' + run.candidates + ' 筆 · 保存 ' + run.saved + ' 筆</p>' +
+      (run.error ? '<p role="alert">列表檢查未完成 · ' + escape(run.error) + '</p>' : '') +
+      (run.failures.length ? '<details><summary>正文取得失敗 ' + run.failures.length + ' 筆</summary><ul>' +
+        run.failures.map(entry => '<li><a href="' + escape(entry.url) + '">' + escape(entry.title) + '</a> · ' +
+          escape(entry.error) + '</li>').join('') + '</ul></details>' : '') : '') +
+    '<h2>已保存來源</h2>' + (entries.length ? '<ul>' + entries.map(entry => '<li><a href="/discover/' + entry.id + '">' +
+      escape(entry.title) + '</a> · ' + escape(entry.date ?? '發布日未載明') + ' · ' + labels[entry.kind] + ' · ' +
+      (entry.kind !== 'version' ? '來源已保存' : entry.active ? '可查看活動' :
+        entry.review?.snapshot === entry.snapshot ? '已人工確認 · 可整理摘要' : '來源已保存 · 拆分待確認') + '</li>').join('') +
+      '</ul>' : '<p>尚未保存公告來源。</p>'));
+}
+
+async function formData(req, limit = 100_000) {
   let body = '';
   for await (const chunk of req) {
     body += chunk;
-    if (body.length > 100_000) throw new Problem('表單內容過大。', 413);
+    if (body.length > limit) throw new Problem('表單內容過大。', 413);
   }
   return new URLSearchParams(body);
 }
@@ -255,10 +313,88 @@ const isTable = source => Boolean(source?.cells?.length || source?.rows?.length)
 const evidenceLink = source => isTable(source)
   ? ' <a href="#' + source.id + '">查看公告表格</a>' : '';
 
-function activityNav(backHref, backText, title) {
+function activityNav(backHref, backText, title, sourceUrl = official) {
   const fragment = encodeURIComponent(title).replaceAll('-', '%2D');
   return '<nav class="activity-nav"><a href="' + backHref + '">' + backText + '</a>' +
-    '<a class="official-button" href="' + escape(official + '#:~:text=' + fragment) + '" target="_blank" rel="noopener noreferrer">官方公告 ↗</a></nav>';
+    '<a class="official-button" href="' + escape(sourceUrl + '#:~:text=' + fragment) + '" target="_blank" rel="noopener noreferrer">官方公告 ↗</a></nav>';
+}
+
+function assistantModel(metadata) {
+  return metadata?.model ? '<p>模型 · ' + escape(metadata.model) + '</p>' : '';
+}
+
+function assistantFacts(facts) {
+  return facts.length ? '<ul>' + facts.map(fact => '<li>' + escape(fact.text) + ' ' +
+    fact.sources.map(source => '<a href="#evidence-' + source.id + '">依據 ' + source.id + '</a>').join(' ') +
+    '</li>').join('') + '</ul>' : '<p>公告未載明</p>';
+}
+
+function assistantEvidence(facts) {
+  const sources = new Map(facts.flatMap(fact => fact.sources.map(source => [source.id, source])));
+  if (!sources.size) return '';
+  return '<h2>官方依據</h2>' + [...sources.values()].map(source =>
+    '<details data-source-flow><summary id="evidence-' + source.id + '">依據 ' + source.id + ' · ' +
+    escape(source.activity + ' · ' + source.scope) + '</summary>' + sourceBody(source) +
+    (source.image ? '<img class="evidence-image" loading="lazy" src="' + source.image + '" alt="核對用官方原圖">' : '') +
+    '<a target="_blank" rel="noopener noreferrer" href="' +
+    escape(source.url ?? official + '#:~:text=' + encodeURIComponent(source.activity).replaceAll('-', '%2D')) +
+    '">查看官方公告 ↗</a></details>').join('') + '<script src="/image-actions.js" defer></script>';
+}
+
+function verifiedImageSources(item, records) {
+  return [...new Set(item.images)].flatMap((url, index) => {
+    const key = imageKey(url);
+    const record = records[key];
+    const note = record?.verifiedText?.[item.id];
+    return note && note.version === record.version ? [{
+      id: key, scope: '官方圖片 ' + (index + 1) + ' · 已核對文字', text: note.text,
+      image: '/images/' + key + '?v=' + encodeURIComponent(note.version),
+    }] : [];
+  });
+}
+
+function imageNoteEditor(item, record) {
+  const note = record?.verifiedText?.[item.id];
+  const confirmed = note?.version === record?.version ? note : undefined;
+  if (!record?.recognition && !confirmed) return '';
+  return '<details class="image-note-editor"><summary>' + (confirmed ? '圖片文字 · 已加入活動筆記' : '圖片辨識 · 待人工核對') + '</summary>' +
+    '<input type="hidden" name="imageVersion" value="' + escape(record.version) + '">' +
+    '<div class="player-question"><label>對照原圖後，保留適用於本活動的文字<textarea name="imageText" rows="5" maxlength="16000">' +
+    escape(confirmed?.text ?? record.recognition.text) + '</textarea></label>' +
+    '<div><button name="action" value="verify-text">核對並加入活動筆記</button> ' +
+    (confirmed ? '<button name="action" value="remove-text">移除已核對文字</button>' : '') + '</div></div>' +
+    (confirmed && record.recognition ? '<details><summary>查看 Gemini 辨識稿</summary><pre>' +
+      escape(record.recognition.text) + '</pre></details>' : '') + '</details>';
+}
+
+function questionForm(item, question = '') {
+  return '<form class="player-question" method="post" action="/activities/' + item.id +
+    '/ask"><label for="player-question">你想更了解這個活動的哪些細節？</label><textarea id="player-question" name="question" rows="2" ' +
+    'maxlength="500" required placeholder="例如：參加資格、活動玩法、獎勵或期限">' +
+    escape(question) + '</textarea><button>用 Agent 回答</button></form>';
+}
+
+const activityMethods = items => items.flatMap(item => item.methods.filter(method => method.kind === 'method')
+  .map(method => ({ item, method })));
+const methodLabel = ({ item, method }) => item.title + ' › ' + method.title;
+
+function comparisonPage(methods, from, selections = [], result, error) {
+  const back = from ? '/activities/' + from.id : '/activities';
+  const fields = ['第一種方式', '第二種方式'].map((label, index) =>
+    '<p><label>' + label + '<select class="comparison-select" name="method" required><option value="">請選擇</option>' +
+    methods.map(entry => '<option value="' + entry.method.id + '"' + (selections[index] === entry.method.id ? ' selected' : '') +
+      '>' + escape(methodLabel(entry)) + '</option>').join('') + '</select></label></p>').join('');
+  const output = result ? '<h2>比較結果</h2><div class="source-table comparison" tabindex="0" role="region" aria-label="取得方式比較">' +
+    '<table><thead><tr><th scope="col">項目</th>' + selections.map(id => '<th scope="col">' +
+    escape(methodLabel(methods.find(entry => entry.method.id === id))) + '</th>').join('') + '</tr></thead><tbody>' +
+    result.rows.map(row => '<tr><th scope="row">' + escape(row.label) + '</th>' +
+      row.cells.map(facts => '<td>' + assistantFacts(facts) + '</td>').join('') + '</tr>').join('') +
+    '</tbody></table></div>' + assistantModel(result.metadata) + assistantEvidence(result.rows.flatMap(row => row.cells.flat())) : '';
+  return page('比較取得方式', '<nav><a href="' + back + '">← 返回活動</a></nav><h1>比較取得方式</h1>' +
+    (methods.length < 2 ? '<p>目前可比較的方法少於兩種。</p>' : '<form method="post" action="/compare">' +
+    (from ? '<input type="hidden" name="activity" value="' + from.id + '">' : '') +
+    fields + '<button>用 Agent 比較</button></form>') +
+    (error ? '<p role="alert">' + escape(error) + '</p>' : '') + output);
 }
 
 function activityDetail(item, now, summaries = {}, status = '', imageRecords = {}, provider = 'gemini') {
@@ -275,8 +411,14 @@ function activityDetail(item, now, summaries = {}, status = '', imageRecords = {
   };
   const cite = source => source ? (isTable(source) ? '' : escape(source.text)) +
     evidenceLink(item.sources.find(original => original.id === source.id) ?? source) : '未載明／待確認';
-  const facts = (label, sources) => '<dt>' + label + '</dt>' +
-    (sources.length ? sources.map(source => '<dd>' + cite(source) + '</dd>').join('') : '<dd>未載明／待確認</dd>');
+  const facts = (label, sources, earlier) => {
+    const repeated = new Set(earlier?.sources.map(source => source.text.replace(/\s+/g, ' ').trim()));
+    const unique = sources.filter(source => !repeated.has(source.text.replace(/\s+/g, ' ').trim()));
+    return '<dt>' + label + '</dt>' + (sources.length
+      ? (unique.length < sources.length ? '<dd>同' + earlier.label + '</dd>' : '') +
+        unique.map(source => '<dd>' + cite(source) + '</dd>').join('')
+      : '<dd>未載明／待確認</dd>');
+  };
   const placed = new Set();
   const placedTables = new Set();
   const isSelected = url => imageRecords[imageKey(url)]?.selected ?? item.shopImages?.includes(url);
@@ -313,14 +455,16 @@ function activityDetail(item, now, summaries = {}, status = '', imageRecords = {
     const shortRewards = rewards.filter(source => !source.text.includes('\n'));
     const ownImages = method.images.filter(url => !item.sharedImages?.includes(url) || method.sourceIds.length === 0);
     const methodPeriods = timeline(item, method);
+    const procedure = { label: '進行方式', sources: steps ? [steps] : [] };
+    const reset = { label: '重置規則', sources: methodPeriods.resets };
     const ownPeriods = [
       ['參加期間', 'participation'], ['開領時間', 'opening'], ['領獎期限', 'claim'],
     ].filter(([, key]) => methodPeriods[key].source?.id !== periods[key].source?.id);
     return '<article id="' + method.id + '"><h2>' + escape(method.title) + '</h2><dl>' +
       (ownPeriods.length ? '<dt>方法狀態</dt><dd>' + activityState(methodPeriods, now) + '</dd>' : '') +
       ownPeriods.map(([label, key]) => showPeriod(label, methodPeriods[key])).join('') +
-      (methodPeriods.resets.length ? facts('重置規則', methodPeriods.resets) : '') +
-      facts('第一步', steps ? [steps] : []) + facts(rewardLabel, shortRewards) + facts('重要限制', limits) +
+      (reset.sources.length ? facts(reset.label, reset.sources) : '') +
+      facts(procedure.label, procedure.sources) + facts(rewardLabel, shortRewards, procedure) + facts('重要限制', limits, reset) +
       facts('成本及付費條件', costs) +
       facts('機率', chances.filter(source => /機率/.test(source.text))) +
       '</dl>' + originalFlow(methodContext(item, method)
@@ -331,14 +475,23 @@ function activityDetail(item, now, summaries = {}, status = '', imageRecords = {
       '<form method="post" action="/activities/' + item.id + '/' + method.id + '"><button>用預設模型整理這個方法</button></form></details></article>';
   }).join('');
   const shared = originalFlow(item.sources, item.images, '活動共用表格與圖片');
-  return page(item.title, activityNav('/activities', '← 全部活動', item.title) + eventLabel(item) + '<h1>' + escape(item.title) + '</h1><p>' +
-    activityState(periods, now) + '</p>' + (status ? '<p role="status">' + escape(status) + '</p>' : '') +
+  const imageNotes = verifiedImageSources(item, imageRecords);
+  return page(item.title, activityNav('/activities', '← 全部活動', item.title, item.officialUrl) + eventLabel(item) + '<h1>' + escape(item.title) + '</h1><p>' +
+    activityState(periods, now) + ' · <a href="#player-tools">玩家查詢</a></p>' + (status ? '<p role="status">' + escape(status) + '</p>' : '') +
     '<dl><dt>參加資格</dt><dd>' + cite(item.eligibility) +
     (item.sharedEligibility && item.sharedEligibility.text !== item.eligibility?.text
       ? '</dd><dd>版本共用資格 · ' + cite(item.sharedEligibility) : '') +
     '</dd>' + showPeriod('參加期間', periods.participation, 'participation') + showPeriod('開領時間', periods.opening) +
     showPeriod('領獎期限', periods.claim, 'claim') + '</dl>' +
-    shared + sections + '<details><summary>用訂閱 Codex 整理本批</summary><p>目前預設：' +
+    (item.relatedNotices?.length ? '<details><summary>相關官方公告</summary><ul>' + item.relatedNotices.map(notice =>
+      '<li><a href="/discover/' + notice.id + '">' + escape(notice.title) + '</a></li>').join('') + '</ul></details>' : '') +
+    shared + sections + '<div id="verified-image-notes">' + (imageNotes.length ? '<section><h2>已核對的官方圖片文字</h2>' +
+    imageNotes.map(source => '<article><h3>' + escape(source.scope) + '</h3><pre>' + escape(source.text) +
+      '</pre><details class="image-preview"><summary>預覽官方原圖</summary><img loading="lazy" src="' + source.image +
+      '" alt="核對用官方原圖"></details></article>').join('') + '</section>' : '') + '</div>' +
+    '<section id="player-tools"><h2>玩家查詢</h2><div class="player-tools"><a href="/compare?activity=' + item.id +
+    '">比較兩種取得方式</a></div><details><summary>問這個活動</summary>' + questionForm(item) + '</details></section>' +
+    '<details><summary>用訂閱 Codex 整理本批</summary><p>目前預設：' +
     (provider === 'codex' ? '訂閱 Codex' : 'Gemini') + '</p><form method="post" action="/activities/' + item.id + '/batch">' +
     item.methods.filter(target => target.kind === 'method').map(target => '<label><input type="checkbox" name="method" value="' +
       target.id + '">' + escape(target.title) + '</label> ').join('') +
@@ -354,17 +507,16 @@ function activityDetail(item, now, summaries = {}, status = '', imageRecords = {
         (record?.version ? '已保存本機原圖' : '尚未保存本機原圖') + '</p>' +
         '<details class="image-preview"><summary>預覽圖片</summary><img loading="lazy" src="' + preview +
         '" alt="' + escape(record?.appearance || '官方圖片 ' + (i + 1)) + '"></details>' +
-        (record?.recognition ? '<details><summary>圖片辨識 · 待人工核對</summary><pre>' + escape(record.recognition.text) + '</pre></details>' : '') +
         '<form method="post" action="/activities/' + item.id + '/images/' + key + '#image-' + key + '">' +
         '<button name="action" value="download">保存／重試原圖</button> ' +
         '<button name="action" value="' + (selected ? 'remove' : 'select') + '">' + (selected ? '移出' : '選入') + '懶人包</button> ' +
         (shop ? '' : '<button name="action" value="recognize">Gemini 辨識這張圖</button>' +
           '<p><label>已核對的單一獎勵名稱 <input name="appearance" maxlength="100" value="' + escape(record?.appearance || '') +
-          '"></label> <button name="action" value="confirm">保存外觀對應</button></p>') + '</form></article>';
+          '"></label> <button name="action" value="confirm">保存外觀對應</button></p>' + imageNoteEditor(item, record)) + '</form></article>';
     }).join('') + '</details><script src="/image-actions.js" defer></script>');
 }
 
-function note(saved, now, query) {
+function note(saved, now, query, catalogItem) {
   const { notice, summary } = saved;
   const time = timing(notice.dates, now);
   const row = (title, value, source) => '<dt>' + title + '</dt><dd>' + escape(value) +
@@ -377,7 +529,8 @@ function note(saved, now, query) {
     : fact('reward');
   return page(activity, activityNav('/?q=' + encodeURIComponent(query ?? notice.reward), '← 回搜尋結果', activity) +
     '<span class="event-label">星夜馬戲團 in 墮落城市</span><h1>' + activity +
-    '</h1><p>' + time.status + '</p><dl>' + fact('eligibility') + row('參加期間', time.text, notice.date?.id) +
+    '</h1><p>' + time.status + (catalogItem ? ' · <a href="/activities/' + catalogItem.id + '#player-tools">玩家查詢</a>' : '') +
+    '</p><dl>' + fact('eligibility') + row('參加期間', time.text, notice.date?.id) +
     row('領獎期限', notice.claim ? '請查看公告所列領取條件' : '此活動段落未載明獨立領獎期限',
       notice.claim?.id ?? 'sources') + '</dl><article id="method"><h2>' + method +
     '</h2><dl>' + fact('first') + rewardDetails + fact('steps') + fact('limits') +
@@ -389,7 +542,8 @@ function note(saved, now, query) {
 
 export function website({ dir = 'data', now = () => new Date(), fetchSource = fetchNotice, summarize = gemini,
   summarizeActivityMethod = summarizeMethod, downloadImage = fetchOfficialImage, summarizeImage = recognizeImage,
-  codexGenerate = createCodexGenerator(), fetchLinkedSource = fetchCorrection } = {}) {
+  codexGenerate = createCodexGenerator(), fetchLinkedSource = fetchCorrection, generatePlayerAssistance,
+  openAnnouncementPages = officialPages, fetchAnnouncement = officialAnnouncement } = {}) {
   let importing = false;
   let catalogCache;
   async function readSaved(name = 'summary.json') {
@@ -425,10 +579,47 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
   }
   async function applyCorrections(items) {
     const corrections = await readSaved('source-corrections.json') ?? {};
-    return items.map(item => corrections[item.id]?.length ? withCorrections(item, corrections[item.id]) : item);
+    const { entries } = await discoveryRegistry();
+    const related = new Map();
+    for (const notice of Object.values(entries).filter(entry => entry.kind !== 'version')) {
+      const ids = new Set(notice.matches.flatMap(block => block.activities.map(activity => activity.id)));
+      for (const id of ids) {
+        if (!related.has(id)) related.set(id, []);
+        related.get(id).push({ id: notice.id, title: notice.title });
+      }
+    }
+    return items.map(item => {
+      const current = corrections[item.id]?.length ? withCorrections(item, corrections[item.id]) : item;
+      return related.has(item.id) ? { ...current, relatedNotices: related.get(item.id) } : current;
+    });
+  }
+  async function discoveryRegistry() {
+    return await readSaved('discovery.json') ?? { entries: {} };
+  }
+  async function discoveredItems() {
+    const { entries } = await discoveryRegistry();
+    return Object.values(entries).flatMap(entry => mergeManual([], entry.review?.entries ?? []).map(item => ({
+      ...item, discoverySnapshot: entry.review.snapshot,
+    })));
+  }
+  async function browsableItems(source) {
+    const extra = await discoveredItems();
+    if (!source) return applyCorrections(extra);
+    const confirmed = await confirmedItems(source);
+    let items;
+    try { items = await readCatalog(source); }
+    catch (error) { if (!(error instanceof Problem)) throw error; items = []; }
+    return applyCorrections([...mergeManual(items, confirmed), ...extra]);
+  }
+  async function preferredProvider() {
+    return (await readSaved('model-preferences.json'))?.provider ?? 'gemini';
   }
   return createServer(async (req, res) => {
     let methodLocked = false;
+    const lockModel = () => {
+      if (importing) throw new Problem('目前正在處理另一項工作，請稍後重試。', 409);
+      importing = methodLocked = true;
+    };
     const respond = (status, body) => res.writeHead(status, {
       'Content-Type': 'text/html; charset=utf-8', 'X-Content-Type-Options': 'nosniff',
       'Content-Security-Policy': "default-src 'none'; img-src 'self' https://tw.hicdn.beanfun.com; script-src 'self'; connect-src 'self'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'",
@@ -443,6 +634,88 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
       }
       if (req.method === 'POST' && req.headers['sec-fetch-site'] && !['same-origin', 'none'].includes(req.headers['sec-fetch-site'])) {
         throw new Problem('請從本機網站操作。', 403);
+      }
+      if (url.pathname === '/discover' || url.pathname === '/discover/import' ||
+          /^\/discover\/[a-f0-9]{24}(?:\/source)?$/.test(url.pathname)) {
+        const registry = await discoveryRegistry();
+        const base = await readSaved('activity-source.json') ?? await readSaved();
+        const clock = now();
+        const window = discoveryWindow(clock);
+        const [, , key, subpage] = url.pathname.split('/');
+        if (req.method === 'GET' && !key) return respond(200, discoveryPage(window, registry));
+        if (req.method === 'POST') lockModel();
+        if (req.method === 'POST' && (!key || key === 'import')) {
+          let items = await browsableItems(base);
+          const importOne = async candidate => {
+            const id = fingerprint(candidate.url).slice(0, 24);
+            const entry = await saveAnnouncement(candidate, items, fetchAnnouncement, save, registry.entries[id], clock);
+            if (!entry) return false;
+            if (entry.existing) {
+              try {
+                catalogFromSnapshot(await readFile(join(dir, entry.snapshot), 'utf8'));
+                if (!base) await save('activity-source.json', JSON.stringify({ snapshot: entry.snapshot, checkedAt: clock.toISOString() }));
+                entry.active = !base || items.some(item => item.id.startsWith('beanfun-19129-'));
+              } catch (error) {
+                if (!(error instanceof Problem)) throw error;
+              }
+            }
+            registry.entries[id] = entry;
+            return true;
+          };
+          if (key === 'import') {
+            const candidate = { url: announcementUrl((await formData(req)).get('url')?.trim() ?? '') };
+            let saved;
+            try { saved = await importOne(candidate); }
+            catch (error) { return respond(502, discoveryPage(window, registry, '正文取得失敗 · ' + error.message)); }
+            if (!saved) return respond(200, discoveryPage(window, registry, '這份公告未找到可對應已收錄活動的異動。'));
+            await save('discovery.json', JSON.stringify(registry));
+            return res.writeHead(303, { Location: '/discover/' + fingerprint(candidate.url).slice(0, 24) }).end();
+          }
+          const { candidates, ...run } = await collectAnnouncements(openAnnouncementPages, clock);
+          const failures = [];
+          let saved = 0;
+          const scan = async group => {
+            for (let index = 0; index < group.length; index += 4) await Promise.all(group.slice(index, index + 4).map(async candidate => {
+              try { if (await importOne(candidate)) saved++; }
+              catch (error) { failures.push({ ...candidate, error: error.message }); }
+            }));
+          };
+          await scan(candidates.filter(candidate => candidate.kind === 'version'));
+          if (!base) items = await browsableItems(await readSaved('activity-source.json'));
+          await scan(candidates.filter(candidate => candidate.kind !== 'version'));
+          registry.run = { ...run, at: clock.toISOString(), candidates: candidates.length, saved, failures };
+          await save('discovery.json', JSON.stringify(registry));
+          return res.writeHead(303, { Location: '/discover' }).end();
+        }
+        const entry = registry.entries[key];
+        if (!entry) throw new Problem('找不到已保存的公告。', 404);
+        const html = await readFile(join(dir, entry.snapshot), 'utf8');
+        if (req.method === 'GET' && subpage === 'source') {
+          return res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8',
+            'Content-Disposition': 'attachment; filename="announcement-source.txt"', 'X-Content-Type-Options': 'nosniff' }).end(html);
+        }
+        if (entry.kind !== 'version' || entry.active) {
+          if (req.method !== 'GET') throw new Problem('請從對應活動核對這份公告。', 405);
+          const evidence = entry.matches.map(block => '<article><pre>' + escape(block.text) + '</pre>' +
+            block.activities.map(({ id, title, name }) => '<a href="/activities/' + id + '">' + escape(title ?? name) + '</a> ').join('') + '</article>').join('');
+          return respond(200, page(entry.title, '<nav><a href="/discover">← 回公告探索</a></nav><h1>' + escape(entry.title) + '</h1>' +
+            '<p><a href="' + escape(entry.url) + '">官方公告 ↗</a> · <a href="/discover/' + entry.id +
+            '/source" download>下載已保存來源</a></p>' + (entry.active ? '<p><a href="/activities">查看活動</a> · <a href="/review">核對拆分</a></p>' :
+            '<p>來源已保存。期限更正可從<a href="/corrections">來源關聯與更正</a>核對。</p>') + evidence));
+        }
+        const document = reviewDocument(html);
+        const review = entry.review;
+        const entries = review?.fingerprint === document.fingerprint ? review.entries : [];
+        const active = mergeManual([], entries);
+        if (req.method === 'GET') return respond(200, reviewPage(document, active, review,
+          entries.length ? '已確認的活動可從活動筆記整理摘要。' : '來源已保存，公告版型待確認。請選取活動與方法內容。',
+          '/discover/' + entry.id, entry.url));
+        if (req.method !== 'POST' || subpage) throw new Problem('操作不支援。', 405);
+        const item = manualActivity(document, await formData(req), active, entry);
+        entry.review = { snapshot: entry.snapshot, fingerprint: document.fingerprint,
+          entries: [...entries.filter(old => old.methods[0].id !== item.methods[0].id), item] };
+        await save('discovery.json', JSON.stringify(registry));
+        return res.writeHead(303, { Location: '/activities/' + item.id + '#' + item.methods[0].id }).end();
       }
       if (url.pathname === '/updates') {
         const source = await readSaved('activity-source.json') ?? await readSaved();
@@ -465,7 +738,8 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
               const image = await downloadImage(record.url);
               if (image.version === record.version) continue;
               await save('image-' + image.version, image.bytes);
-              records[key] = { url: record.url, version: image.version, mime: image.mime, selected: record.selected };
+              records[key] = { url: record.url, version: image.version, mime: image.mime, selected: record.selected,
+                verifiedText: record.verifiedText };
               changed.push(key);
             } catch (error) { if (!(error instanceof Problem)) throw error; failed.push(key); }
           }
@@ -488,13 +762,13 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
               const state = !previous ? '尚未整理' : previous.inputKey === methodFingerprint(item, target, records,
                 provider, provider === 'codex' ? CODEX_MODEL : process.env.GEMINI_MODEL) ? '摘要已是最新' : '摘要待重整 · 舊摘要仍可讀';
               return '<li><a href="/activities/' + item.id + '#' + target.id + '">' + escape(item.title + ' › ' + target.title) +
-                '</a> · ' + state + (previous?.at ? ' · 摘要完成 ' + escape(previous.at) : '') +
+                '</a> · ' + state + (previous?.at ? ' · 摘要完成 ' + escape(formatTimestamp(previous.at)) : '') +
                 (state === '摘要已是最新' ? '' : '<form method="post" action="/activities/' + item.id + '/' + target.id + '"><button>整理這個方法</button></form>') + '</li>';
             })).join('');
           } catch (error) { if (!(error instanceof Problem)) throw error; body = '<li>' + escape(error.message) + ' <a href="/review">檢視拆分</a></li>'; }
         }
         return respond(200, page('來源與摘要更新', '<nav><a href="/">← 首頁</a></nav><h1>來源與摘要更新</h1>' +
-          '<p>來源取得 ' + escape(source?.checkedAt ?? source?.capturedAt ?? '尚未記錄') + '</p>' +
+          '<p>來源取得 ' + escape(formatTimestamp(source?.checkedAt ?? source?.capturedAt)) + '</p>' +
           (latest ? '<p>' + (latest.changed ? '來源已更新' : '公告文字未變') + ' · 已變更圖片 ' + latest.images +
             ' 張 · 無法查驗圖片 ' + latest.failed + ' 張</p>' : '') +
           '<form method="post"><button>重新取得官方來源</button></form>' +
@@ -529,8 +803,8 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
           importing = methodLocked = true;
         }
         const source = await readSaved('activity-source.json') ?? await readSaved();
-        if (!source) throw new Problem('請先匯入公告。', 404);
-        const items = mergeManual(await readCatalog(source), await confirmedItems(source));
+        const items = await browsableItems(source);
+        if (!items.length) throw new Problem('請先保存並確認公告。', 404);
         const records = await readSaved('source-corrections.json') ?? {};
         if (req.method === 'POST') {
           const form = await formData(req);
@@ -601,32 +875,66 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
           return respond(error.status, home(await readSaved(), '', now(), status, Boolean(await readSaved('activity-source.json'))));
         } finally { importing = false; }
       }
-      if (req.method === 'GET' && url.pathname === '/') {
+      const agentSearch = req.method === 'POST' && url.pathname === '/assist/search';
+      if ((req.method === 'GET' && url.pathname === '/') || agentSearch) {
         const saved = await readSaved();
         const source = await readSaved('activity-source.json') ?? saved;
-        const query = url.searchParams.get('q')?.trim() ?? '';
-        let listing;
-        if (source) {
-          const confirmed = await confirmedItems(source);
-          let items;
-          try { items = await readCatalog(source); }
-          catch (error) { if (!(error instanceof Problem)) throw error; items = []; }
-          items = await applyCorrections(mergeManual(items, confirmed));
-          if (items.length) listing = {
-            items, images: await readSaved('official-images.json') ?? {}, snapshot: source.snapshot,
-            filters: {
-              query,
-              status: statuses.includes(url.searchParams.get('state')) ? url.searchParams.get('state') : '',
-              type: rewardTypes.includes(url.searchParams.get('type')) ? url.searchParams.get('type') : '',
-            },
-          };
+        const params = agentSearch ? await formData(req) : url.searchParams;
+        const query = params.get('q')?.trim() ?? '';
+        const items = await browsableItems(source);
+        const listing = items.length ? {
+          items, images: await readSaved('official-images.json') ?? {}, snapshot: source?.snapshot,
+          filters: {
+            query,
+            status: statuses.includes(params.get('state')) ? params.get('state') : '',
+            type: rewardTypes.includes(params.get('type')) ? params.get('type') : '',
+          },
+        } : undefined;
+        let assist;
+        let status = 200;
+        if (agentSearch) {
+          try {
+            if (!query || query.length > 200) throw new Problem('請輸入 1–200 字的搜尋句。');
+            const candidates = listing ? searchCatalog(items, { ...listing.filters, query: '' }, now(), listing.images,
+              { includeMethods: true }) : [];
+            lockModel();
+            assist = await searchWithAgent(query, candidates, playerAssistant(await preferredProvider(), codexGenerate, generatePlayerAssistance));
+          } catch (error) {
+            if (!(error instanceof Problem)) throw error;
+            assist = { error: error.message };
+            status = error.status;
+          }
         }
-        return respond(200, home(saved, query, now(), await readSaved('status.json'), Boolean(source), listing));
+        return respond(status, home(saved, query, now(), await readSaved('status.json'), Boolean(source), listing, assist));
+      }
+      if (url.pathname === '/compare' && ['GET', 'POST'].includes(req.method)) {
+        const source = await readSaved('activity-source.json') ?? await readSaved();
+        const items = await browsableItems(source);
+        const params = req.method === 'POST' ? await formData(req) : url.searchParams;
+        const from = items.find(item => item.id === params.get('activity'));
+        const methods = activityMethods(from ? [from, ...items.filter(item => item !== from)] : items);
+        const ids = params.getAll('method');
+        if (req.method === 'GET') return respond(200, comparisonPage(methods, from));
+        try {
+          const selections = ids.map(id => methods.find(entry => entry.method.id === id));
+          if (selections.length !== 2 || selections.some(entry => !entry) || ids[0] === ids[1]) {
+            throw new Problem('請選擇兩種不同的取得方式。');
+          }
+          lockModel();
+          const result = await compareMethods(selections, playerAssistant(await preferredProvider(), codexGenerate, generatePlayerAssistance));
+          return respond(200, comparisonPage(methods, from, ids, result));
+        } catch (error) {
+          if (!(error instanceof Problem)) throw error;
+          return respond(error.status, comparisonPage(methods, from, ids, undefined, error.message));
+        }
       }
       if (req.method === 'GET' && /^\/images\/[a-f0-9]{24}$/.test(url.pathname)) {
         const key = url.pathname.split('/').at(-1);
         const record = (await readSaved('official-images.json'))?.[key];
         if (!record?.version) throw new Problem('找不到已保存的圖片。', 404);
+        if (url.searchParams.has('v') && url.searchParams.get('v') !== record.version) {
+          throw new Problem('這張圖片的版本已更新。', 404);
+        }
         const bytes = await readFile(join(dir, 'image-' + record.version));
         return res.writeHead(200, { 'Content-Type': record.mime, 'X-Content-Type-Options': 'nosniff' }).end(bytes);
       }
@@ -677,25 +985,26 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
           importing = methodLocked = true;
         }
         const saved = await readSaved('activity-source.json') ?? await readSaved();
-        if (!saved) throw new Problem('請先匯入公告 19129。', 404);
+        const extraItems = await discoveredItems();
+        if (!saved && !extraItems.length) throw new Problem('請先從公告探索保存並確認來源。', 404);
         let items;
         let previousCatalog;
         let pending = '';
-        const confirmed = await confirmedItems(saved);
-        try { items = await readCatalog(saved); }
+        const confirmed = saved ? await confirmedItems(saved) : [];
+        try { items = saved ? await readCatalog(saved) : []; }
         catch (error) {
           if (!(error instanceof Problem)) throw error;
           const old = await readSaved('activity-catalog.json');
           previousCatalog = old?.snapshot !== saved.snapshot ? old : null;
           pending = previousCatalog?.items?.length
             ? '新來源拆分待確認，仍可查看上次成功的活動。' : '來源拆分待確認，只列出已人工確認的活動。';
-          if (!confirmed.length && !(req.method === 'GET' && previousCatalog?.items?.length)) {
+          if (!confirmed.length && !extraItems.length && !(req.method === 'GET' && previousCatalog?.items?.length)) {
             return respond(422, page('拆分待確認', '<h1>拆分待確認</h1><p>' + escape(error.message) +
               '</p><p><a href="/review">檢視來源並調整拆分</a></p>'));
           }
           items = [];
         }
-        items = await applyCorrections(mergeManual(items, confirmed));
+        items = await applyCorrections([...mergeManual(items, confirmed), ...extraItems]);
         if (req.method === 'GET' && url.pathname === '/activities') {
           const listed = [...items, ...(previousCatalog?.items ?? []).filter(old => !items.some(item => item.id === old.id))];
           return respond(200, activityList(listed, url.searchParams.get('q')?.trim() ?? '', now(), pending));
@@ -714,12 +1023,19 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
         if (req.method === 'POST' && item && methodId === 'images' && extra && !rest) {
           const imageUrl = item.images.find(url => imageKey(url) === extra);
           if (!imageUrl) throw new Problem('這張圖不屬於指定活動。', 404);
-          const form = await formData(req);
+          const form = await formData(req, 180_000);
           const action = form.get('action');
           const old = imageRecords[extra];
           const shop = item.shopImages?.includes(imageUrl);
-          if (!['download', 'select', 'remove', 'recognize', 'confirm'].includes(action) || (shop && ['recognize', 'confirm'].includes(action))) {
+          const editsText = action === 'verify-text' || action === 'remove-text';
+          if (!['download', 'select', 'remove', 'recognize', 'confirm'].includes(action) && !editsText) {
+            throw new Problem('圖片操作不支援。');
+          }
+          if (shop && (editsText || ['recognize', 'confirm'].includes(action))) {
             throw new Problem('這張圖片使用原圖規則。');
+          }
+          if (editsText && (!old?.version || old.version !== form.get('imageVersion'))) {
+            throw new Problem('原圖版本已變更，請重新開啟圖片並核對。', 409);
           }
           const record = { ...old, url: imageUrl, selected: old?.selected ?? Boolean(shop) };
           if (action !== 'remove' && (!record.version || action === 'download')) {
@@ -737,6 +1053,14 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
             if (appearance.length > 100) throw new Problem('獎勵名稱過長。');
             record.appearance = appearance;
           }
+          if (editsText) {
+            record.verifiedText = { ...record.verifiedText };
+            if (action === 'verify-text') {
+              const text = form.get('imageText')?.trim() ?? '';
+              if (!text || text.length > 16000) throw new Problem('請輸入 1–16000 字的已核對內容。');
+              record.verifiedText[item.id] = { text, version: record.version };
+            } else delete record.verifiedText[item.id];
+          }
           imageRecords[extra] = record;
           await save('official-images.json', JSON.stringify(imageRecords, null, 2));
           if (action === 'recognize') {
@@ -744,14 +1068,35 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
             await save('official-images.json', JSON.stringify(imageRecords, null, 2));
           }
           const methods = await readSaved('activity-methods.json');
-          return respond(200, activityDetail(item, now(), methods?.methods ?? {}, '已更新官方圖片。', imageRecords)
+          const status = action === 'verify-text' ? '已將核對文字加入活動筆記。' :
+            action === 'remove-text' ? '已從活動筆記移除核對文字。' : '已更新官方圖片。';
+          return respond(200, activityDetail(item, now(), methods?.methods ?? {}, status, imageRecords, await preferredProvider())
             .replace('<details id="image-library">', '<details id="image-library" open>'));
         }
         if (!item || extra !== undefined) throw new Problem('找不到活動。', 404);
         const savedMethods = await readSaved('activity-methods.json');
         const summaries = savedMethods?.methods ?? {};
-        const preferred = (await readSaved('model-preferences.json'))?.provider ?? 'gemini';
+        const preferred = await preferredProvider();
         if (req.method === 'GET' && !methodId) return respond(200, activityDetail(item, now(), summaries, pending, imageRecords, preferred));
+        if (req.method === 'POST' && methodId === 'ask') {
+          const question = (await formData(req)).get('question')?.trim() ?? '';
+          let status = 200;
+          let content;
+          try {
+            if (!question || question.length > 500) throw new Problem('請輸入 1–500 字的問題。');
+            const result = await answerPlayer(item, question,
+              playerAssistant(preferred, codexGenerate, generatePlayerAssistance), verifiedImageSources(item, imageRecords));
+            content = '<h2>回答</h2>' + (result.facts.length ? assistantFacts(result.facts) : '<p>已收錄的公告沒有足夠資料回答。</p>') +
+              (result.incomplete && result.facts.length ? '<p>部分條件仍需核對官方公告。</p>' : '') +
+              assistantModel(result.metadata) + assistantEvidence(result.facts);
+          } catch (error) {
+            if (!(error instanceof Problem)) throw error;
+            status = error.status;
+            content = '<p role="alert">' + escape(error.message) + '</p>';
+          }
+          return respond(status, page('問這個活動', activityNav('/activities/' + item.id, '← 回到活動', item.title, item.officialUrl) +
+            '<h1>問這個活動</h1><p>' + escape(item.title) + '</p>' + questionForm(item, question) + content));
+        }
         const target = item.methods.find(method => method.id === methodId && method.kind === 'method');
         if (req.method === 'POST' && (target || methodId === 'batch')) {
           const batch = methodId === 'batch';
@@ -785,7 +1130,7 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
                 rewards: known.rewards.map(source => source.id),
               });
               summaries[target.id] = { facts, references: sourceReferences(sources), inputKey, model: generated.metadata, at: now().toISOString() };
-              await save('activity-methods.json', JSON.stringify({ snapshot: saved.snapshot, methods: summaries }, null, 2));
+              await save('activity-methods.json', JSON.stringify({ snapshot: saved?.snapshot ?? item.discoverySnapshot, methods: summaries }, null, 2));
               remaining.delete(target.id);
             }
           } catch (error) {
@@ -801,7 +1146,11 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
       if (req.method !== 'GET') throw new Problem('操作不支援。', 405);
       if (url.pathname === '/note') {
         const saved = await readSaved();
-        if (saved) return respond(200, note(saved, now(), url.searchParams.get('q')));
+        if (saved) {
+          const source = await readSaved('activity-source.json') ?? saved;
+          const item = (await browsableItems(source)).find(item => item.title === activity);
+          return respond(200, note(saved, now(), url.searchParams.get('q'), item));
+        }
       }
       throw new Problem('找不到頁面。', 404);
     } catch (error) {

@@ -15,7 +15,7 @@
 | [07: 區塊更新與共用條件影響追蹤](.scratch/maplestory-notice/issues/07-incremental-block-updates.md) | 04 |
 | [08: 用訂閱Codex整理指定批次並切換預設](.scratch/maplestory-notice/issues/08-codex-subscription-batches.md) | 07 |
 | [09: 合併多來源與顯示官方更正差異](.scratch/maplestory-notice/issues/09-merge-sources-and-corrections.md) | 05、07 |
-| [10: 回溯180天並發現新的相關公告](.scratch/maplestory-notice/issues/10-discover-and-backfill-notices.md) | 09 |
+| [10: 回溯 90 天並發現新的相關公告](.scratch/maplestory-notice/issues/10-discover-and-backfill-notices.md) | 09 |
 | [11: 依活動期限持續追蹤既有來源](.scratch/maplestory-notice/issues/11-track-active-notice-sources.md) | 10 |
 | [12: 每日固定更新與錯過排程補查](.scratch/maplestory-notice/issues/12-daily-schedule-and-catch-up.md) | 10 |
 | [13: 受控批次、失敗重試與待處理工作](.scratch/maplestory-notice/issues/13-bounded-batches-and-retries.md) | 10 |
@@ -26,3 +26,15 @@
 | [18: 已知修復問題清單及活動關聯](.scratch/maplestory-notice/issues/18-known-and-fixed-issues.md) | 10 |
 | [19: 備份還原完整本機資料並離線核對](.scratch/maplestory-notice/issues/19-backup-restore-and-offline.md) | 08、14、15、17、18 |
 | [20: 代表公告品質比較與完整流程驗收](.scratch/maplestory-notice/issues/20-representative-mvp-acceptance.md) | 11、12、13、19 |
+
+## 玩家 Agent 查詢增補
+
+工單 07–09 後增補的玩家查詢，依 [規格 D16 與 AC36–AC38](SPEC.md#d16-玩家-agent-查詢)驗收。依賴 06 的搜尋與活動筆記、08 的模型途徑。工單 10–20 的前置與順序依上表。
+
+| 公告 19129 驗收 | 本機訂閱 Codex 實測 | 耗時 | 輸入／輸出 token |
+| --- | --- | --- | --- |
+| 燃燒之城應援情境 | 回答以選擇時的 Lv259 為準，有可展開的來源 | 9.8 秒 | 15,081／137 |
+| 燃燒之城與墮落雷霆應援比較 | 並排顯示兩種方法，兩欄各有來源 | 21.0 秒 | 14,138／835 |
+| 「那個烤章魚的椅子怎麼拿」 | 找到三眼章魚直火燒烤的取得方式 | 4.8 秒 | 15,058／17 |
+
+以上使用隔離的公告快照和 Codex CLI 預設模型，各跑一次。真人操作與 Gemini 真實回覆品質待驗收。

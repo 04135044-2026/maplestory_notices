@@ -26,6 +26,64 @@ function page(children) {
 }
 const html = page(heading('慶典活動', 20) + chair + stress + box);
 
+test('官方回溯依台北日期跨頁，待確認版本可人工發布，列表失敗保留來源', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'maple-discovery-'));
+  const source = '19129-discovery.html';
+  await writeFile(join(dir, source), html);
+  await writeFile(join(dir, 'activity-source.json'), JSON.stringify({ snapshot: source }));
+  const row = (id, title, startDate, urlLink) => ({ bullentinId: id, title, startDate, urlLink });
+  const event = id => 'https://maplestory-event.beanfun.com/eventad/eventad?eventadid=' + id;
+  let failed = false;
+  let summaryCalls = 0;
+  const server = website({ dir, now: () => new Date('2026-11-11T16:30:00Z'),
+    openAnnouncementPages: async () => async number => {
+      if (failed && number === 2) throw new Error('分頁暫時無法取得');
+      return { totalPages: 3, rows: number === 1 ? [
+        row(111, '例行維護開機公告', '2026/11/11'),
+        row(112, '獨立商城公告', '2026/08/15'),
+      ] : [row(113, '學院改版', '2026/08/15', event(19999)), row(114, '更早公告', '2026/08/14', event(18888))] };
+    },
+    fetchAnnouncement: async url => ({
+      title: url.endsWith('18888') ? '較舊官方活動' : '官方測試公告',
+      date: '2026/08/14',
+      html: url.includes('bid=111') ? '<p>三眼章魚直火燒烤</p><p>活動期間照常。</p>' :
+        url.includes('bid=112') ? '<p>皇家美容商品上架。</p>' : '<h2>學院新活動</h2><p>完成指定任務可獲得獎勵。</p>',
+    }),
+    summarizeActivityMethod: async () => { summaryCalls++; throw new Error('本測試不送模型'); },
+  });
+  try {
+    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+    const root = 'http://127.0.0.1:' + server.address().port;
+    const post = (path, fields = {}) => fetch(root + path, { method: 'POST', redirect: 'manual', body: new URLSearchParams(fields) });
+    const get = path => fetch(root + path).then(response => response.text());
+    assert.equal((await post('/discover')).status, 303);
+    assert.equal((await post('/discover')).status, 303);
+    const listing = await get('/discover');
+    assert.match(listing, /2026-08-15 至 2026-11-12[\s\S]*讀取 2 頁/);
+    assert.equal((listing.match(/>學院改版<\/a>/g) ?? []).length, 1);
+    assert.doesNotMatch(listing, /獨立商城公告|更早公告/);
+    const version = listing.match(/href="(\/discover\/[a-f0-9]+)">學院改版/)[1];
+    const review = await get(version);
+    assert.match(review, /公告版型待確認/);
+    assert.match(await get(version + '/source'), /學院新活動/);
+    const revision = review.match(/name="fingerprint" value="([^"]+)"/)[1];
+    const added = await post(version, { fingerprint: revision, title: '學院新活動', method: '完成指定任務', own: 'B2' });
+    assert.equal(added.status, 303);
+    assert.match(await get(added.headers.get('location')), /學院新活動[\s\S]*用預設模型整理這個方法/);
+    assert.match(await get('/?q=學院新活動'), /學院新活動/);
+    const older = await post('/discover/import', { url: event(18888) });
+    assert.equal(older.status, 303);
+    assert.match(await get('/discover'), /較舊官方活動/);
+    failed = true;
+    assert.equal((await post('/discover')).status, 303);
+    assert.match(await get('/discover'), /列表檢查未完成[\s\S]*學院改版/);
+    assert.equal(summaryCalls, 0);
+  } finally {
+    if (server.listening) await new Promise(resolve => server.close(resolve));
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test('未知模板的原文經人工確認後可查閱，且只整理已選區塊', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'maple-review-'));
   const snapshot = '19129-review.html';
@@ -127,7 +185,7 @@ test('從活動入口核對取得方法，Gemini 只收到指定方法的適用�
   const dir = await mkdtemp(join(tmpdir(), 'maple-catalog-'));
   const snapshot = '19129-test.html';
   await writeFile(join(dir, snapshot), html);
-  await writeFile(join(dir, 'summary.json'), JSON.stringify({ snapshot }));
+  await writeFile(join(dir, 'summary.json'), JSON.stringify({ snapshot, capturedAt: '2026-11-12T08:24:49.046Z' }));
   let imageCalls = 0;
   let methodCalls = 0;
   const server = website({ dir, now: () => new Date('2026-11-12T20:00:00+08:00'),
@@ -168,7 +226,9 @@ test('從活動入口核對取得方法，Gemini 只收到指定方法的適用�
     const select = await fetch(root + imageAction, { method: 'POST', body: new URLSearchParams({ action: 'select' }) });
     assert.equal(select.status, 200);
     assert.equal(imageCalls, 0);
-    assert.match(await (await fetch(root + '/updates')).text(), /摘要待重整 · 舊摘要仍可讀/);
+    const updates = await (await fetch(root + '/updates')).text();
+    assert.match(updates, /來源取得 2026-11-12 16:24:49（台北時間）/);
+    assert.match(updates, /摘要待重整 · 舊摘要仍可讀 · 摘要完成 2026-11-12 20:00:00（台北時間）/);
     const rendered = await select.text();
     const cached = rendered.match(/src="(\/images\/[^"]+)"/)?.[1];
     assert.equal(await (await fetch(root + cached)).text(), 'sample-image');
@@ -229,6 +289,107 @@ test('網站保留補充來源，只有明示更正才更新參加期限', async
     const updated = await detail();
     assert.match(updated, /進行中[\s\S]*12\/08 23:59[\s\S]*原公告[\s\S]*12\/01/);
     assert.match(updated, /查閱官方更正/);
+  } finally {
+    if (server.listening) await new Promise(resolve => server.close(resolve));
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('玩家可問活動、比較方法及用自然語言搜尋，模型只能引用適用的資料', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'maple-player-assist-'));
+  const snapshot = '19129-player.html';
+  await writeFile(join(dir, snapshot), html);
+  await writeFile(join(dir, 'activity-source.json'), JSON.stringify({ snapshot }));
+  const [chairItem, stressItem] = catalogFromSnapshot(html);
+  const methodId = item => item.methods.find(method => method.kind === 'method').id;
+  let searchCalls = 0;
+  let codexCalls = 0;
+  let imageVersion = 'original';
+  const server = website({ dir, now: () => new Date('2026-11-12T20:00:00+08:00'),
+    downloadImage: async () => ({ bytes: Buffer.from(imageVersion), mime: 'image/png', version: imageVersion }),
+    summarizeImage: async () => ({ text: '待核對的辨識稿' }),
+    generatePlayerAssistance: async (_instruction, input) => {
+      if (input.question) {
+        assert.equal(input.activity, chairItem.title);
+        assert.ok(input.sources.every(source => !source.text.includes('老手設計師')));
+        if (input.question === '圖中的技能上限？') {
+          assert.ok(input.sources.every(source => !source.text.includes('待核對的辨識稿')));
+          const image = input.sources.find(source => source.scope.includes('已核對文字'));
+          return { result: { facts: image ? [{ text: image.text, sources: [image.id] }] : [], incomplete: !image } };
+        }
+        const source = input.sources.find(source => source.text.includes('1250分'));
+        const facts = [{ text: '單局達 1250 分就符合這項分數門檻。', sources: [source.id] }];
+        return { result: input.question === '未載明' ? { facts: [], incomplete: true } : { facts, incomplete: false } };
+      }
+      searchCalls++;
+      assert.ok(input.choices.every(choice => choice.reward));
+      return { result: { matches: input.query === '未知候選' ? ['S999999'] :
+        [input.choices.find(choice => choice.reward === chairItem.title).id] } };
+    },
+    codexGenerate: async ({ parts, schema }) => {
+      codexCalls++;
+      const { sides, fields } = JSON.parse(parts[0].text);
+      assert.equal(schema.type, 'object');
+      const [left, right] = sides.map(side => ({
+        ...Object.fromEntries(Object.keys(fields).map(key => [key, []])),
+        eligibility: [{ text: side.sources.find(source => source.text.includes('設計師')).text,
+          sources: [side.sources.find(source => source.text.includes('設計師')).id] }],
+      }));
+      if (codexCalls > 1) left.eligibility[0].sources = right.eligibility[0].sources;
+      return { result: { left, right }, model: '測試 Codex' };
+    },
+  });
+  try {
+    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+    const root = 'http://127.0.0.1:' + server.address().port;
+    const post = (path, values) => fetch(root + path, {
+      method: 'POST', redirect: 'manual', body: new URLSearchParams(values),
+    });
+    const text = path => fetch(root + path).then(response => response.text());
+    const activityPath = '/activities/' + chairItem.id;
+    const detail = await text(activityPath);
+    assert.match(detail, /比較兩種取得方式[\s\S]*問這個活動/);
+    const answer = await post(activityPath + '/ask', { question: '單局1250分夠嗎？' });
+    assert.equal(answer.status, 200);
+    assert.match(await answer.text(), /單局達 1250 分[\s\S]*href="#evidence-Q\d+"[\s\S]*累積獲得4萬分或單局獲得1250分/);
+    assert.match(await (await post(activityPath + '/ask', { question: '未載明' })).text(), /沒有足夠資料回答/);
+    const imageAction = detail.match(/action="(\/activities\/[^"]+\/images\/[^"#]+)#/)?.[1];
+    const askImage = () => post(activityPath + '/ask', { question: '圖中的技能上限？' }).then(response => response.text());
+    const draft = await post(imageAction, { action: 'recognize' }).then(response => response.text());
+    assert.match(draft, /待人工核對[\s\S]*待核對的辨識稿/);
+    assert.match(await askImage(), /沒有足夠資料回答/);
+    const verified = { action: 'verify-text', imageVersion, imageText: '技能等級上限為 5 級（測試資料）' };
+    assert.match(await (await post(imageAction, verified)).text(), /已核對的官方圖片文字[\s\S]*技能等級上限為 5 級/);
+    assert.match(await askImage(), /技能等級上限為 5 級[\s\S]*已核對文字[\s\S]*\?v=original/);
+    await post(imageAction, { action: 'remove-text', imageVersion });
+    assert.match(await askImage(), /沒有足夠資料回答/);
+    await post(imageAction, verified);
+    imageVersion = 'replacement';
+    await post(imageAction, { action: 'download' });
+    assert.match(await askImage(), /沒有足夠資料回答/);
+    assert.equal((await post(imageAction, verified)).status, 409);
+    assert.match(await text('/?q=那個烤章魚的椅子怎麼拿'), /用 Agent 搜尋/);
+    assert.equal(searchCalls, 0);
+    const search = await post('/assist/search', { q: '那個烤章魚的椅子怎麼拿', type: '外觀與收藏', state: '進行中' });
+    assert.equal(search.status, 200);
+    const searchPage = await search.text();
+    assert.match(searchPage, new RegExp('Agent 搜尋結果[\\s\\S]*' + activityPath + '#' + methodId(chairItem)));
+    assert.match(searchPage, /<form method="get" action="\/">/);
+    assert.doesNotMatch(searchPage, /找不到符合的結果/);
+    const invalid = await post('/assist/search', { q: '未知候選', type: '外觀與收藏' });
+    assert.equal(invalid.status, 502);
+    assert.match(await invalid.text(), /用 Agent 搜尋[\s\S]*候選結果無效/);
+    assert.equal((await post('/model-preferences', { provider: 'codex' })).status, 303);
+    assert.match(await text('/compare?activity=' + chairItem.id), /第一種方式[\s\S]*第二種方式/);
+    const selections = [['method', methodId(chairItem)], ['method', methodId(stressItem)]];
+    const comparison = await post('/compare', selections);
+    assert.equal(comparison.status, 200);
+    assert.match(await comparison.text(), /比較結果[\s\S]*依據 A\d+[\s\S]*依據 B\d+[\s\S]*公告未載明[\s\S]*測試 Codex/);
+    const wrongSource = await post('/compare', selections);
+    assert.equal(wrongSource.status, 502);
+    assert.match(await wrongSource.text(), /模型回傳的內容或來源有誤/);
+    assert.equal((await post('/compare', [selections[0], selections[0]])).status, 422);
+    assert.equal(codexCalls, 2);
   } finally {
     if (server.listening) await new Promise(resolve => server.close(resolve));
     await rm(dir, { recursive: true, force: true });

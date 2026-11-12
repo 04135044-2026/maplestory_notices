@@ -30,7 +30,7 @@ export function reviewDocument(html) {
   return { fingerprint: hash(html), blocks };
 }
 
-export function manualActivity(document, form, automatic = []) {
+export function manualActivity(document, form, automatic = [], notice = {}) {
   if (form.get('fingerprint') !== document.fingerprint) throw new Problem('來源已更新，請重新核對人工歸屬。', 409);
   const title = form.get('title')?.trim();
   const method = form.get('method')?.trim();
@@ -48,13 +48,14 @@ export function manualActivity(document, form, automatic = []) {
   const parent = parentId ? automatic.find(item => item.id === parentId) : current;
   if ((target && !current) || (parentId && !parent)) throw new Problem('選取的活動或方法已不在這份來源。');
   if (!parent && !title) throw new Problem('新增活動時請填寫活動名稱。');
-  const id = parent?.id ?? 'manual-' + hash(JSON.stringify([title]));
+  const id = parent?.id ?? 'manual-' + hash(JSON.stringify(notice.id ? [notice.id, title] : [title]));
   const methodId = target || id + '-method-' + hash(JSON.stringify([method]));
   const sources = blocks.map(block => ({ ...block, scope: shared.includes(block.id) ? '人工確認共用條件' : '人工確認取得方法' }));
   const images = blocks.flatMap(block => block.images);
   const sharedImages = blocks.filter(block => shared.includes(block.id)).flatMap(block => block.images);
   const local = sources.filter(block => shared.includes(block.id));
-  return { id, title: parent?.title ?? title, fromActivityId: current?.id, pageTitle: '公告 19129', sources, images, local, dates: null, template: 'manual-v1',
+  return { id, title: parent?.title ?? title, fromActivityId: current?.id, pageTitle: notice.title ?? '公告 19129',
+    officialUrl: notice.url, sources, images, local, dates: null, template: 'manual-v1',
     eligibility: sources.find(source => /^(參加條件|活動資格)[：:]/.test(source.text)),
     methods: [{ id: methodId, title: method, kind: 'method', images, sourceIds: own, sharedSourceIds: shared }],
     sharedImages };
