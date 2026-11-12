@@ -38,7 +38,7 @@ const imageActions = `
 function revealSource(hash) {
   if (!hash) return;
   const target = document.getElementById(hash.slice(1));
-  const panel = target?.closest('.source-panel');
+  const panel = target?.closest('.source-panel, details[data-source-flow]');
   if (panel && !panel.open) {
     panel.open = true;
     target.scrollIntoView();
@@ -242,14 +242,20 @@ function sourceBody(source) {
     }).join('') + '</tr>').join('') + '</tbody></table></div>';
 }
 
+const isTable = source => Boolean(source?.cells?.length || source?.rows?.length);
+const evidenceLink = source => isTable(source)
+  ? ' <a href="#' + source.id + '">查看公告表格</a>' : ' ' + link;
+
 function activityDetail(item, now, summaries = {}, status = '', imageRecords = {}) {
   const periods = timeline(item);
   const showPeriod = (label, period) => '<dt>' + label + '</dt><dd>' + escape(periodText(period)) +
-    (period.source ? ' <a href="#' + period.source.id + '">查看依據</a>' : '') + '</dd>';
-  const cite = source => source ? (source.rows ? sourceBody(source) : escape(source.text)) + ' <a href="#' + source.id + '">查看依據</a>' : '未載明／待確認';
+    (period.source ? evidenceLink(period.source) : '') + '</dd>';
+  const cite = source => source ? (isTable(source) ? '' : escape(source.text)) +
+    evidenceLink(item.sources.find(original => original.id === source.id) ?? source) : '未載明／待確認';
   const facts = (label, sources) => '<dt>' + label + '</dt>' +
     (sources.length ? sources.map(source => '<dd>' + cite(source) + '</dd>').join('') : '<dd>未載明／待確認</dd>');
   const placed = new Set();
+  const placedTables = new Set();
   const isSelected = url => imageRecords[imageKey(url)]?.selected ?? item.shopImages?.includes(url);
   const imagesFor = urls => [...new Set(urls)].filter(url => !placed.has(url)).map(url => {
     placed.add(url);
@@ -263,7 +269,15 @@ function activityDetail(item, now, summaries = {}, status = '', imageRecords = {
   const originalFlow = (sources, urls, title) => {
     const allowed = new Set(urls.filter(url => !placed.has(url)));
     const at = images => imagesFor((images ?? []).filter(url => allowed.has(url)));
-    const body = sources.map(source => at(source.beforeImages) + sourceBody(source) + at(source.images)).join('');
+    const body = sources.map(source => {
+      let table = '';
+      if (isTable(source) && !placedTables.has(source.id)) {
+        placedTables.add(source.id);
+        table = '<div id="' + source.id + '">' + sourceBody(source) + '</div>';
+      }
+      return at(source.beforeImages) + table + at(source.images);
+    }).join('');
+    if (!body && !allowed.size) return '';
     return '<details data-source-flow' + ([...allowed].some(isSelected) ? ' open' : '') + '><summary>' +
       title + '</summary>' + body + imagesFor([...allowed]) + '</details>';
   };
@@ -288,11 +302,12 @@ function activityDetail(item, now, summaries = {}, status = '', imageRecords = {
       facts('機率', chances.filter(source => /機率/.test(source.text))) +
       '</dl>' + originalFlow(methodContext(item, method)
         .filter(source => method.sourceIds.includes(source.id) || item.local.includes(source)), ownImages,
-        '查看方法原文及表格') + '<details><summary>Gemini 整理</summary>' +
+        '公告表格與圖片') + '<details><summary>Gemini 整理</summary>' +
       (summaries[method.id] ? '<dl>' + Object.entries(methodFields).map(([key, label]) =>
         facts(label, summaries[method.id].facts[key].map(fact => ({ text: fact.text, id: fact.source })))).join('') + '</dl>' : '<p>尚未整理這個方法。</p>') +
       '<form method="post" action="/activities/' + item.id + '/' + method.id + '"><button>用 Gemini 整理這個方法</button></form></details></article>';
   }).join('');
+  const shared = originalFlow(item.sources, item.images, '活動共用表格與圖片');
   return page(item.title, '<nav><a href="/activities">← 全部活動</a></nav>' + eventLabel(item) + '<h1>' + escape(item.title) + '</h1><p>' +
     activityState(periods, now) + ' · ' + link + '</p>' + (status ? '<p role="status">' + escape(status) + '</p>' : '') +
     '<dl><dt>參加資格</dt><dd>' + cite(item.eligibility) +
@@ -300,11 +315,7 @@ function activityDetail(item, now, summaries = {}, status = '', imageRecords = {
       ? '</dd><dd>版本共用資格 · ' + cite(item.sharedEligibility) : '') +
     '</dd>' + showPeriod('參加期間', periods.participation) + showPeriod('開領時間', periods.opening) +
     showPeriod('領獎期限', periods.claim) + '</dl>' +
-    (item.images.some(url => !placed.has(url)) ? originalFlow(item.sources.filter(source =>
-      [...(source.beforeImages ?? []), ...(source.images ?? [])].some(url => !placed.has(url))), item.images, '活動共用原文及圖片') : '') + sections +
-    '<details class="source-panel" id="sources"><summary>官方公告段落（' + item.sources.length + '）</summary>' +
-    item.sources.map(source => '<article id="' + source.id + '"><small>' +
-      escape(source.scope) + '</small>' + sourceBody(source) + '</article>').join('') + '</details>' +
+    shared + sections +
     '<details id="image-library"><summary>官方圖片來源與選圖</summary>' +
     item.images.map((url, i) => {
       const key = imageKey(url);
@@ -330,7 +341,7 @@ function note(saved, now, query) {
   const { notice, summary } = saved;
   const time = timing(notice.dates, now);
   const row = (title, value, source) => '<dt>' + title + '</dt><dd>' + escape(value) +
-    (source ? ' <a href="#' + source + '">查看依據</a>' : '') + '</dd>';
+    (source ? evidenceLink(notice.sources.find(original => original.id === source)) : '') + '</dd>';
   const fact = key => row(fields[key], summary[key].text, summary[key].source);
   const rewards = query ? matchingRewards(notice, query) : [];
   const rewardDetails = rewards.some(reward => reward.name !== notice.reward)
@@ -344,8 +355,8 @@ function note(saved, now, query) {
       notice.claim?.id ?? 'sources') + '</dl><article id="method"><h2>' + method +
     '</h2><dl>' + fact('first') + rewardDetails + fact('steps') + fact('limits') +
     '</dl><a href="#' + notice.table + '">查看應援規則與獎勵表</a></article>' +
-    '<details class="source-panel" id="sources"><summary>官方公告段落（' + notice.sources.length + '）</summary>' +
-    notice.sources.map(source => '<article id="' + source.id + '">' + sourceBody(source) + '</article>').join('') +
+    '<details class="source-panel" id="sources"><summary>官方公告表格</summary>' +
+    notice.sources.filter(isTable).map(source => '<article id="' + source.id + '">' + sourceBody(source) + '</article>').join('') +
     '</details><script src="/image-actions.js" defer></script>');
 }
 
