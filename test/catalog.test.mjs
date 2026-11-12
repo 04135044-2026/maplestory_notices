@@ -336,6 +336,12 @@ test('網站保留補充來源，只有明示更正才更新參加期限', async
       body: new URLSearchParams({ activity: item.id, url: officialUrl, field: 'participation', kind, quote, end }),
     });
     const detail = () => fetch(root + '/activities/' + item.id).then(response => response.text());
+    const rewardPage = await fetch(root + '/?' + new URLSearchParams({ q: item.title, type: '外觀與收藏' })).then(response => response.text());
+    const rewardId = rewardPage.match(/name="id" value="([a-f0-9]{64})"/)[1];
+    for (const id of [item.id, rewardId]) {
+      assert.equal((await fetch(root + '/watch', { method: 'POST', redirect: 'manual', body: new URLSearchParams({ id }) })).status, 303);
+    }
+    assert.match(await fetch(root + '/?watched=1').then(response => response.text()), /取消關注/);
     assert.equal((await post('supplement', supplementary, '')).status, 303);
     assert.match(await detail(), /已結束[\s\S]*另有來源待比對/);
     assert.equal((await post('correction', supplementary, '2026/12/09')).status, 422);
@@ -343,6 +349,8 @@ test('網站保留補充來源，只有明示更正才更新參加期限', async
     const updated = await detail();
     assert.match(updated, /進行中[\s\S]*12\/08 23:59[\s\S]*原公告[\s\S]*12\/01/);
     assert.match(updated, /查閱官方更正/);
+    const watched = await fetch(root + '/watch').then(response => response.text());
+    assert.equal((watched.match(/關注項目的來源已更新/g) ?? []).length, 2);
   } finally {
     if (server.listening) await new Promise(resolve => server.close(resolve));
     await rm(dir, { recursive: true, force: true });

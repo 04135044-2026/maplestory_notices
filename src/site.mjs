@@ -10,6 +10,7 @@ import { CODEX_MODEL, createCodexGenerator } from './codex.mjs';
 import { fetchCorrection, officialCorrectionUrl, verifiedSource, withCorrections } from './corrections.mjs';
 import { activityState, periodText, timeline } from './periods.mjs';
 import { rewardTypes, searchCatalog, statuses } from './search.mjs';
+import { watchKey, watchVersion } from './watch.mjs';
 import { answerPlayer, compareMethods, playerAssistant, searchWithAgent } from './player-assist.mjs';
 import { announcementUrl, collectAnnouncements, discoveryWindow, officialAnnouncement, officialPages, saveAnnouncement } from './discovery.mjs';
 import { sourceTracking } from './tracking.mjs';
@@ -194,7 +195,16 @@ function activityGroups(entries, itemOf, render) {
   }).join('');
 }
 
-function catalogResults(entries, saved) {
+function watchButton(entry, watches, back) {
+  const id = watchKey(entry);
+  const saved = watches[id];
+  return (saved && saved.version !== watchVersion(entry) ? '<p role="status">關注項目的來源已更新</p>' : '') +
+    '<form method="post" action="/watch"><input type="hidden" name="id" value="' + id +
+    '"><input type="hidden" name="back" value="' + escape(back) + '"><button>' +
+    (saved ? '取消關注' : entry.reward ? '關注獎勵' : '關注活動') + '</button></form>';
+}
+
+function catalogResults(entries, saved, watches, back = '/') {
   if (!entries.length) return '<p>在已收錄的公告 19129 及其他已確認來源中找不到符合的結果。</p>';
   return activityGroups(entries, entry => entry.item, ({ item, method: target, reward, state, periods, image }) => {
     const legacy = saved && reward && item.title === activity && target.title === method &&
@@ -210,12 +220,13 @@ function catalogResults(entries, saved) {
       '<p>來源 · ' + escape(item.pageTitle) + (item.officialUrl ? '' : '（19129）') + '</p>' +
       (image ? '<img loading="lazy" style="max-width:160px" src="/images/' + image + '" alt="' + escape(reward.name) + '">' :
         reward ? '<p>尚無外觀圖片</p>' : '') +
-      '<p><a href="' + href + '">' + (reward ? '查看取得方式 →' : '查看活動 →') + '</a></p></article>';
+      '<p><a href="' + href + '">' + (reward ? '查看取得方式 →' : '查看活動 →') + '</a></p>' +
+      (watches ? watchButton({ item, method: target, reward }, watches, back) : '') + '</article>';
   });
 }
 
 function primaryTabs(active) {
-  return '<nav class="site-tabs" aria-label="主要分頁">' + [['/', '活動與獎勵'], ['/manage', '公告管理']]
+  return '<nav class="site-tabs" aria-label="主要分頁">' + [['/', '活動與獎勵'], ['/watch', '我的關注'], ['/manage', '公告管理']]
     .map(([href, label]) => '<a href="' + href + '"' + (href === active ? ' aria-current="page"' : '') + '>' + label + '</a>').join('') + '</nav>';
 }
 
@@ -232,20 +243,24 @@ function managementPage(saved, status, hasSnapshot) {
 }
 
 function home(saved, query, now, hasSnapshot = Boolean(saved), listing, assist) {
-  const hasSearch = query || listing?.filters.status || listing?.filters.type;
-  const entries = listing ? searchCatalog(listing.items, listing.filters, now, listing.images) : [];
+  const hasSearch = query || listing?.filters.status || listing?.filters.type || listing?.filters.watched;
+  const entries = listing ? searchCatalog(listing.items, listing.filters, now, listing.images,
+    { includeMethods: listing.filters.watched }).filter(entry => !listing.filters.watched ||
+      ((!entry.method || entry.reward) && listing.watches[watchKey(entry)])) : [];
+  const back = listing?.back ?? '/';
   const offerAssist = listing && query && (!entries.length || entries.length > 8 || assist);
-  let nameResults = listing ? catalogResults(entries, listing.snapshot === saved?.snapshot ? saved : null) :
+  let nameResults = listing ? catalogResults(entries, listing.snapshot === saved?.snapshot ? saved : null, listing.watches, back) :
     searchResults(saved, query, now);
   if (assist) nameResults = entries.length || !assist.matches?.length
     ? '<section><h2>名稱搜尋結果</h2>' + nameResults + '</section>' : '';
   return page('新楓之谷公告懶人包', primaryTabs('/') + '<h1>新楓之谷公告懶人包</h1><form method="get" action="/"><label for="q">搜尋獎勵或活動</label> <input id="q" name="q" value="' +
     escape(query) + '"> ' + (listing ? filterOptions('state', statuses, listing.filters.status, '活動狀態') + ' ' +
-      filterOptions('type', rewardTypes, listing.filters.type, '獎勵類型') + ' ' : '') +
+      filterOptions('type', rewardTypes, listing.filters.type, '獎勵類型') + ' <label><input type="checkbox" name="watched" value="1"' +
+      (listing.filters.watched ? ' checked' : '') + '>只看關注</label> ' : '') +
     '<button>搜尋</button>' + (offerAssist ? ' <button formmethod="post" formaction="/assist/search">用 Agent 搜尋</button>' : '') +
     (hasSearch ? '<a class="search-home-link" href="/">回首頁</a>' : '') + '</form>' +
     (assist ? '<section><h2>Agent 搜尋結果</h2>' + (assist.error ? '<p role="alert">' + escape(assist.error) + '</p>' :
-      assist.matches.length ? catalogResults(assist.matches) + assistantModel(assist.metadata) :
+      assist.matches.length ? catalogResults(assist.matches, null, listing?.watches, back) + assistantModel(assist.metadata) :
         '<p>已收錄的活動與獎勵沒有明確符合的結果。</p>') + '</section>' : '') +
     nameResults +
     (hasSnapshot || listing ? '<p><a href="/activities">查看全部已收錄活動</a></p>' : ''));
@@ -459,7 +474,7 @@ function comparisonPage(methods, from, selections = [], result, error) {
     (error ? '<p role="alert">' + escape(error) + '</p>' : '') + output);
 }
 
-function activityDetail(item, now, summaries = {}, status = '', imageRecords = {}, provider = 'gemini') {
+function activityDetail(item, now, summaries = {}, status = '', imageRecords = {}, provider = 'gemini', watches) {
   const periods = timeline(item);
   const showPeriod = (label, period, field) => {
     const change = period.change;
@@ -538,7 +553,8 @@ function activityDetail(item, now, summaries = {}, status = '', imageRecords = {
   }).join('');
   const shared = originalFlow(item.sources, item.images, '活動共用表格與圖片');
   const imageNotes = verifiedImageSources(item, imageRecords);
-  return page(item.title, activityNav('/activities', '← 全部活動', item.title, item.officialUrl) + eventLabel(item) + '<h1>' + escape(item.title) + '</h1><p>' +
+  return page(item.title, activityNav('/activities', '← 全部活動', item.title, item.officialUrl) + eventLabel(item) + '<h1>' + escape(item.title) + '</h1>' +
+    (watches ? watchButton({ item }, watches, '/activities/' + item.id) : '') + '<p>' +
     activityState(periods, now) + ' · <a href="#player-tools">玩家查詢</a></p>' + (status ? '<p role="status">' + escape(status) + '</p>' : '') +
     '<dl><dt>參加資格</dt><dd>' + cite(item.eligibility) +
     (item.sharedEligibility && item.sharedEligibility.text !== item.eligibility?.text
@@ -839,6 +855,35 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
       if (req.method === 'GET' && url.pathname === '/jobs') {
         return respond(200, jobsPage(await discoveryRegistry(), await readSaved('jobs.json') ?? {}, activeJobId));
       }
+      if (url.pathname === '/watch') {
+        if (req.method === 'POST') lockModel();
+        const watches = await readSaved('watches.json') ?? {};
+        const items = await browsableItems(await readSaved('activity-source.json') ?? await readSaved());
+        const current = searchCatalog(items, { query: '', status: '', type: '' }, now(), await readSaved('official-images.json') ?? {},
+          { includeMethods: true }).filter(entry => !entry.method || entry.reward);
+        if (req.method === 'POST') {
+          const form = await formData(req);
+          const id = form.get('id');
+          if (Object.hasOwn(watches, id)) delete watches[id];
+          else {
+            const entry = current.find(entry => watchKey(entry) === id);
+            if (!entry) throw new Problem('找不到可關注的項目。', 404);
+            watches[id] = { label: entry.reward?.name ?? entry.item.title, version: watchVersion(entry) };
+          }
+          await save('watches.json', JSON.stringify(watches));
+          const back = form.get('back') ?? '';
+          const safeBack = /^\/(?:watch$|activities\/[\w-]+$|\?[^\r\n]*$|$)/.test(back) ? back : '/watch';
+          return res.writeHead(303, { Location: safeBack }).end();
+        }
+        if (req.method !== 'GET') throw new Problem('操作不支援。', 405);
+        const entries = current.filter(entry => watches[watchKey(entry)]);
+        const keys = new Set(entries.map(watchKey));
+        const missing = Object.entries(watches).filter(([id]) => !keys.has(id));
+        return respond(200, page('我的關注', primaryTabs('/watch') + '<h1>我的關注</h1>' +
+          (entries.length ? catalogResults(entries, null, watches, '/watch') : '<p>目前沒有可查看的關注項目。</p>') +
+          missing.map(([id, record]) => '<p>' + escape(record.label) + ' · 來源待確認</p><form method="post">' +
+            '<input type="hidden" name="id" value="' + escape(id) + '"><button>取消關注</button></form>').join('')));
+      }
       if (req.method === 'GET' && url.pathname === '/manage') {
         const saved = await readSaved();
         const source = await readSaved('activity-source.json') ?? saved;
@@ -1086,10 +1131,13 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
         const items = await browsableItems(source);
         const listing = items.length ? {
           items, images: await readSaved('official-images.json') ?? {}, snapshot: source?.snapshot,
+          watches: await readSaved('watches.json') ?? {},
+          back: '/?' + new URLSearchParams(params),
           filters: {
             query,
             status: statuses.includes(params.get('state')) ? params.get('state') : '',
             type: rewardTypes.includes(params.get('type')) ? params.get('type') : '',
+              watched: params.get('watched') === '1',
           },
         } : undefined;
         let assist;
@@ -1098,7 +1146,7 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
           try {
             if (!query || query.length > 200) throw new Problem('請輸入 1–200 字的搜尋句。');
             const candidates = listing ? searchCatalog(items, { ...listing.filters, query: '' }, now(), listing.images,
-              { includeMethods: true }) : [];
+              { includeMethods: true }).filter(entry => !listing.filters.watched || listing.watches[watchKey(entry)]) : [];
             lockModel();
             assist = await searchWithAgent(query, candidates, playerAssistant(await preferredProvider(), codexGenerate, generatePlayerAssistance));
           } catch (error) {
@@ -1298,7 +1346,8 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
         const savedMethods = await readSaved('activity-methods.json');
         const summaries = savedMethods?.methods ?? {};
         const preferred = await preferredProvider();
-        if (req.method === 'GET' && !methodId) return respond(200, activityDetail(item, now(), summaries, pending, imageRecords, preferred));
+        if (req.method === 'GET' && !methodId) return respond(200, activityDetail(item, now(), summaries, pending, imageRecords, preferred,
+          await readSaved('watches.json') ?? {}));
         if (req.method === 'POST' && methodId === 'ask') {
           const question = (await formData(req)).get('question')?.trim() ?? '';
           let status = 200;
