@@ -30,19 +30,32 @@ function range(source, years, bounds) {
 }
 
 export function timeline(item, method) {
-  const version = item.sources.find(source => source.scope.startsWith('版本共用期間'));
+  const manualRanges = item.template === 'manual-v1' ? item.local.filter(source =>
+    /^\d{4}\/\d{1,2}\/\d{1,2}(?:\s+\d{1,2}:\d{2})?\s*[~～]\s*\d{4}\/\d{1,2}\/\d{1,2}(?:\s+\d{1,2}:\d{2})?$/.test(source.text)
+    && !/1900\/.*2100\//.test(source.text)) : [];
+  const manualRange = manualRanges.length === 1 ? manualRanges[0] : undefined;
+  const version = item.sources.find(source => source.scope.startsWith('版本共用期間')) ?? manualRange;
   const years = [...new Set([...(version?.text ?? '').matchAll(/(\d{4})\//g)].map(match => match[1]))];
   const shared = range(version, []);
   const bounds = shared.start && shared.end && !/1900\/.*2100\//.test(version?.text ?? '') ? shared : undefined;
   const sourceYears = bounds ? years : [];
   const own = method ? item.sources.filter(source => method.sourceIds.includes(source.id)) : item.local;
-  const localDate = own.find(source => /^活動(?:日期|時間)|^參加(?:期間|時間|期限)/.test(source.text));
+  const localDate = own.find(source => /^(?:活動(?:日期|時間)|參加(?:期間|時間|期限)|活動從\d)/.test(
+    source.text.replace(/^[^\p{L}\p{N}]+/u, '')));
   const localClaim = own.find(source => /^(?:領獎|獎勵領取|領取)(?:期間|時間|期限|截止)/.test(source.text.replace(/^[^\p{L}\p{N}]+/u, '')));
   const localOpen = own.find(source => /^(?:開領|開放領取|獎勵開放領取)|(?:可在|可以在)\d{1,2}\/\d{1,2}維護後領取/.test(source.text));
   const base = method ? timeline(item) : null;
-  const date = localDate ?? item.date;
+  const date = localDate ?? item.date ?? manualRange;
   const permanent = /1900\/.*2100\//.test(date?.text ?? '');
-  const participation = permanent ? { source: date, permanent } : range(date, sourceYears, bounds);
+  let participation = permanent ? { source: date, permanent } : range(date, sourceYears, bounds);
+  if (!method && manualRange && date !== manualRange && participation.start && participation.end &&
+      participation.start.date === shared.start?.date &&
+      participation.end?.date === shared.end?.date) participation = shared;
+  if (method && !localDate) participation = base.participation;
+  if (method && localDate && participation.start && !participation.end && base.participation.end &&
+      participation.start.date <= base.participation.end.date && /開始|維護後/.test(localDate.text)) {
+    participation = { ...participation, end: base.participation.end };
+  }
   const claim = localClaim ? range(localClaim, sourceYears, bounds) : base?.claim ?? { source: null };
   const corrected = (period, change) => {
     if (!change) return period;
@@ -51,7 +64,7 @@ export function timeline(item, method) {
     return { ...period, end, permanent: false, original: period, change, source: period.source ?? { text: change.quote } };
   };
   return {
-    participation: corrected(participation, localDate && method ? null : item.changes?.participation),
+    participation: method ? participation : corrected(participation, item.changes?.participation),
     claim: claim.change ? claim : corrected(claim, localClaim && method ? null : item.changes?.claim),
     opening: localOpen ? range(localOpen, sourceYears, bounds) : base?.opening ?? { source: null },
     resets: own.filter(source => !source.rows && /初始化|重置/.test(source.text)),

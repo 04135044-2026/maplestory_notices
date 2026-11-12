@@ -1,6 +1,7 @@
 import { load } from 'cheerio';
 import { fingerprint } from './incremental.mjs';
 import { Problem } from './notice.mjs';
+import { officialAnnouncement } from './discovery.mjs';
 
 const clean = value => value.replace(/\s+/g, ' ').trim();
 const hosts = new Set(['maplestory.beanfun.com', 'maplestory-event.beanfun.com', 'beanfun-event.beanfun.com']);
@@ -18,6 +19,9 @@ export function officialCorrectionUrl(value) {
 
 export async function fetchCorrection(value) {
   let url = officialCorrectionUrl(value);
+  if (new URL(url).pathname === '/bulletin' && /^\d+$/.test(new URL(url).searchParams.get('bid') ?? '')) {
+    return { url, ...(await officialAnnouncement(url)) };
+  }
   for (let attempt = 0; attempt < 3; attempt++) {
     const response = await fetch(url, { redirect: 'manual', signal: AbortSignal.timeout(15000) }).catch(() => null);
     if (!response) throw new Problem('官方公告讀取失敗，已保存的期限不受影響。', 502);

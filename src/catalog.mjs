@@ -60,8 +60,8 @@ export function methodFacts(activity, method) {
   const sources = methodContext(activity, method).filter(source =>
     method.sourceIds.includes(source.id) || source.scope === '活動共用條件與說明');
   const body = sources.filter(source => !dateLabel.test(source.text) && !eligibilityLabel.test(source.text));
-  const steps = body.find(source => !source.rows && /接受任務|對話|選擇|進入|挑戰/.test(source.text));
-  const rewards = body.filter(source => /(?:領取|獲得).*獎勵|可領取紀念椅子|可追加領取|^分類\s*\|\s*獎勵/.test(source.text));
+  const steps = body.find(source => !source.rows && /接受任務|對話|選擇|進入|挑戰|狩獵\s*\d|點選|單人攻略/.test(source.text));
+  const rewards = body.filter(source => /(?:領取|獲得).*(?:獎勵|學分)|可領取紀念椅子|可追加領取|^分類\s*\|\s*獎勵/.test(source.text));
   const limits = body.filter(source => !source.rows && /一天.*次|一週.*次|每天.*次|每週.*(?:次|只能)|最多|限時|初始化|重置|每局.*次/.test(source.text) && !source.text.includes('\n'));
   const costs = body.filter(source => !source.rows && /花費|消耗|捐獻|使用楓幣|使用.*點數/.test(source.text) && !source.text.includes('\n'));
   const chances = body.filter(source => /機率|機會獲得|可能獲得/.test(source.text));

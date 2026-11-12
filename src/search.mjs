@@ -43,7 +43,7 @@ export function activityRewards(item, method) {
   return rewards;
 }
 
-export function searchCatalog(items, filters, now, images) {
+export function searchCatalog(items, filters, now, images, { includeMethods = false } = {}) {
   const { query, status, type } = filters;
   const needle = query.normalize('NFKC').toLocaleLowerCase('zh-TW');
   const match = name => name.normalize('NFKC').toLocaleLowerCase('zh-TW').includes(needle);
@@ -52,12 +52,12 @@ export function searchCatalog(items, filters, now, images) {
     const periods = timeline(item);
     const state = activityState(periods, now);
     if (!type && (!status || status === state) && (!query || match(item.title))) candidates.push({ item, state, periods });
-    if (!query && !type) continue;
+    if (!query && !type && !includeMethods) continue;
     for (const method of item.methods.filter(method => method.kind === 'method')) {
       const methodPeriods = timeline(item, method);
       const methodState = activityState(methodPeriods, now);
       if (status && methodState !== status) continue;
-      if (!type && query && !match(item.title) && match(method.title)) {
+      if (!type && ((!query && includeMethods) || (query && !match(item.title) && match(method.title)))) {
         candidates.push({ item, method, state: methodState, periods: methodPeriods });
       }
       for (const reward of activityRewards(item, method)) {
