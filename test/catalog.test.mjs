@@ -340,6 +340,19 @@ test('網站保留補充來源，只有明示更正才更新參加期限', async
       body: new URLSearchParams({ activity: item.id, url: officialUrl, field: 'participation', kind, quote, end }),
     });
     const detail = () => fetch(root + '/activities/' + item.id).then(response => response.text());
+    const month = await fetch(root + '/calendar?month=2026-10').then(response => response.text());
+    assert.match(month, /datetime="2026-10-21"[\s\S]*開始[\s\S]*三眼章魚直火燒烤/);
+    const exportResponse = await fetch(root + '/calendar', { method: 'POST', body: new URLSearchParams({ activity: item.id }) });
+    assert.match(exportResponse.headers.get('content-type'), /^text\/calendar/);
+    const calendar = await exportResponse.text();
+    assert.ok(calendar.split('\r\n').every(line => Buffer.byteLength(line) <= 75));
+    const unfolded = calendar.replaceAll('\r\n ', '');
+    const events = [...unfolded.matchAll(/BEGIN:VEVENT\r\n([\s\S]*?)END:VEVENT/g)].map(match =>
+      Object.fromEntries(match[1].trim().split('\r\n').map(line => [line.slice(0, line.indexOf(':')), line.slice(line.indexOf(':') + 1)])));
+    assert.ok(events.length >= 2);
+    assert.ok(events.every(event => event.SUMMARY.includes(item.title) && event.DESCRIPTION.includes('/activities/' + item.id)));
+    assert.equal(events.find(event => event.SUMMARY.startsWith('開始'))['DTSTART;VALUE=DATE'], '20261021');
+    assert.equal(events[0].DTSTAMP, '20261202T120000Z');
     const editorPath = '/edits?method=' + method.id;
     const editor = () => fetch(root + editorPath).then(response => response.text());
     const editId = (await editor()).match(/name="id" value="([a-f0-9]{64})"/)[1];
@@ -360,6 +373,9 @@ test('網站保留補充來源，只有明示更正才更新參加期限', async
     const updated = await detail();
     assert.match(updated, /進行中[\s\S]*12\/08 23:59[\s\S]*原公告[\s\S]*12\/01/);
     assert.match(updated, /查閱官方更正/);
+    const correctedCalendar = await fetch(root + '/calendar', { method: 'POST',
+      body: new URLSearchParams({ activity: item.id }) }).then(response => response.text());
+    assert.match(correctedCalendar, /DTSTART:20261208T155900Z/);
     assert.match(await editor(), /保存個人修正時的依據[\s\S]*目前自動摘要與來源/);
     assert.equal((await edit('restore')).status, 303);
     assert.match(await detail(), /已保存的自動步驟/);
