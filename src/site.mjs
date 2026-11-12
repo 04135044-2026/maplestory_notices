@@ -2,6 +2,7 @@ import { createServer } from 'node:http';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { activity, extract, fetchNotice, fields, gemini, method, official, Problem, validate } from './notice.mjs';
+import { catalogFromSnapshot, methodContext, methodFacts, methodFields, summarizeMethod, validateMethod } from './catalog.mjs';
 
 const escape = value => String(value).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]);
 const link = '<a href="' + official + '" target="_blank" rel="noopener noreferrer">查看官方公告 ↗</a>';
@@ -34,7 +35,8 @@ function matchingRewards(notice, query) {
 function searchResults(saved, query, now) {
   if (!saved) return '<p>尚未整理公告，匯入後即可搜尋。</p>';
   const rewards = matchingRewards(saved.notice, query);
-  if (!rewards.length) return '<p>在已收錄的獎勵或活動中找不到符合的名稱。</p>';
+  if (!rewards.length) return '<p>目前的獎勵表沒有符合的名稱。</p><p><a href="/activities?q=' +
+    encodeURIComponent(query) + '">依名稱搜尋公告 19129 的其他活動 →</a></p>';
   const time = timing(saved.notice.dates, now);
   const href = query ? '/note?q=' + encodeURIComponent(query) + '#method' : '/note#method';
   return rewards.map(({ name, quantity, level }) => '<article><h2>' + escape(name) + ' ×' + escape(quantity) +
@@ -45,10 +47,61 @@ function searchResults(saved, query, now) {
 function home(saved, query, now, status) {
   return page('新楓之谷公告懶人包', '<h1>新楓之谷公告懶人包</h1><form method="get"><label for="q">搜尋獎勵或活動</label> <input id="q" name="q" value="' +
     escape(query) + '"> <button>搜尋</button></form>' + searchResults(saved, query, now) +
+    (saved ? '<p><a href="/activities">查看公告 19129 的全部活動</a></p>' : '') +
     '<details' + (status ? ' open' : '') + '><summary>公告管理</summary>' +
     (status ? '<p>' + escape(status) + '</p>' : '') +
     (saved ? '<p>已保存摘要：' + escape(new Date(saved.capturedAt).toLocaleString('zh-TW', { timeZone: 'Asia/Taipei' })) + '（台灣時間）</p>' : '') +
     '<form method="post" action="/import"><button>匯入並整理公告 19129</button></form></details>');
+}
+
+function activityList(activities, query, now) {
+  const entries = activities.filter(item => !query || item.title.includes(query) || item.methods.some(method => method.title.includes(query)));
+  return page('公告 19129 活動', '<nav><a href="/">← 首頁</a></nav><h1>' + escape(activities[0].pageTitle) +
+    '</h1><p>' + link + '</p><form><label for="q">活動名稱</label> <input id="q" name="q" value="' + escape(query) +
+    '"> <button>搜尋</button></form>' +
+    (entries.length ? entries.map(item => {
+      const time = timing(item.dates, now);
+      return '<article><h2><a href="/activities/' + item.id + '">' + escape(item.title) + '</a></h2><p>' +
+        (item.groupTitle ? escape(item.groupTitle) + ' · ' : '') + time.status + ' · ' + time.text + '</p></article>';
+    }).join('') : '<p>查無符合的活動。</p>'));
+}
+
+function activityDetail(item, now, summaries = {}, status = '') {
+  const time = timing(item.dates, now);
+  const cite = source => source ? escape(source.text) + ' <a href="#' + source.id + '">查看依據</a>' : '未載明／待確認';
+  const facts = (label, sources) => '<dt>' + label + '</dt>' +
+    (sources.length ? sources.map(source => '<dd>' + cite(source) + '</dd>').join('') : '<dd>未載明／待確認</dd>');
+  const sections = item.methods.map(method => {
+    if (method.kind === 'reference') return '<details><summary>補充說明 · ' + escape(method.title) +
+      '</summary>' + methodContext(item, method).filter(source => method.sourceIds.includes(source.id))
+        .map(source => '<p>' + cite(source) + '</p>').join('') + '</details>';
+    const { steps, rewards, costs, chances, limits } = methodFacts(item, method);
+    const rewardLabel = chances.some(source => source.text.includes('可能獲得')) ? '可能獎勵' : '獎勵';
+    const shortRewards = rewards.filter(source => !source.text.includes('\n'));
+    return '<article id="' + method.id + '"><h2>' + escape(method.title) + '</h2><dl>' +
+      facts('第一步', steps ? [steps] : []) + facts(rewardLabel, shortRewards) + facts('重要限制', limits) +
+      facts('成本及付費條件', costs) +
+      facts('機率', chances.filter(source => /機率/.test(source.text))) +
+      '</dl><details><summary>Gemini 整理</summary>' +
+      (summaries[method.id] ? '<dl>' + Object.entries(methodFields).map(([key, label]) =>
+        facts(label, summaries[method.id].facts[key].map(fact => ({ text: fact.text, id: fact.source })))).join('') + '</dl>' : '<p>尚未整理這個方法。</p>') +
+      '<form method="post" action="/activities/' + item.id + '/' + method.id + '"><button>用 Gemini 整理這個方法</button></form></details>' +
+      '<details><summary>查看方法原文及表格</summary>' +
+      methodContext(item, method).filter(source => method.sourceIds.includes(source.id) || item.local.includes(source))
+        .map(source => '<pre>' + cite(source) + '</pre>').join('') + '</details></article>';
+  }).join('');
+  return page(item.title, '<nav><a href="/activities">← 全部活動</a></nav><h1>' + escape(item.title) + '</h1><p>' +
+    time.status + ' · ' + link + '</p>' + (status ? '<p role="status">' + escape(status) + '</p>' : '') +
+    '<dl><dt>參加資格</dt><dd>' + cite(item.eligibility) +
+    (item.sharedEligibility && item.sharedEligibility.text !== item.eligibility?.text
+      ? '</dd><dd>版本共用資格 · ' + cite(item.sharedEligibility) : '') +
+    '</dd><dt>參加期間</dt><dd>' + time.text + (item.date ? ' <a href="#' + item.date.id + '">查看依據</a>' : '') +
+    '</dd><dt>領獎期限</dt><dd>' + cite(item.local.find(source => /(?:領獎|領取)(?:期限|期間|截止)/.test(source.text))) +
+    '</dd></dl>' + sections +
+    '<h2>官方公告段落</h2>' + item.sources.map(source => '<article id="' + source.id + '"><small>' +
+      escape(source.scope) + '</small><pre>' + escape(source.text) + '</pre></article>').join('') +
+    '<details><summary>官方圖片來源（內容待確認）</summary>' +
+    item.images.map((url, i) => '<p><a href="' + escape(url) + '" target="_blank" rel="noopener noreferrer">官方圖片 ' + (i + 1) + '</a></p>').join('') + '</details>');
 }
 
 function note(saved, now, query) {
@@ -71,8 +124,9 @@ function note(saved, now, query) {
     notice.sources.map(source => '<article id="' + source.id + '"><pre>' + escape(source.text) + '</pre></article>').join(''));
 }
 
-export function website({ dir = 'data', now = () => new Date(), fetchSource = fetchNotice, summarize = gemini } = {}) {
+export function website({ dir = 'data', now = () => new Date(), fetchSource = fetchNotice, summarize = gemini, summarizeActivityMethod = summarizeMethod } = {}) {
   let importing = false;
+  let catalogCache;
   async function readSaved(name = 'summary.json') {
     try { return JSON.parse(await readFile(join(dir, name), 'utf8')); }
     catch (error) { if (error.code !== 'ENOENT') throw error; return null; }
@@ -93,10 +147,10 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
         throw new Problem('請使用本機網站網址。', 403);
       }
       const url = new URL(req.url, 'http://localhost');
+      if (req.method === 'POST' && req.headers['sec-fetch-site'] && !['same-origin', 'none'].includes(req.headers['sec-fetch-site'])) {
+        throw new Problem('請從本機網站操作。', 403);
+      }
       if (req.method === 'POST' && url.pathname === '/import') {
-        if (req.headers['sec-fetch-site'] && !['same-origin', 'none'].includes(req.headers['sec-fetch-site'])) {
-          throw new Problem('請從本機網站操作。', 403);
-        }
         if (importing) throw new Problem('公告正在整理中。', 409);
         importing = true;
         let sourceSaved = false;
@@ -121,8 +175,44 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
           return respond(error.status, home(await readSaved(), '', now(), status));
         } finally { importing = false; }
       }
+      if (req.method === 'GET' && url.pathname === '/') return respond(200, home(await readSaved(), url.searchParams.get('q')?.trim() ?? '', now(), await readSaved('status.json')));
+      if (url.pathname === '/activities' || url.pathname.startsWith('/activities/')) {
+        const saved = await readSaved();
+        if (!saved) throw new Problem('請先匯入公告 19129。', 404);
+        if (catalogCache?.snapshot !== saved.snapshot) {
+          catalogCache = {
+            snapshot: saved.snapshot,
+            items: (async () => {
+              const items = catalogFromSnapshot(await readFile(join(dir, saved.snapshot), 'utf8'));
+              await save('activity-catalog.json', JSON.stringify({ snapshot: saved.snapshot, items }, null, 2));
+              return items;
+            })(),
+          };
+        }
+        const items = await catalogCache.items;
+        if (req.method === 'GET' && url.pathname === '/activities') return respond(200, activityList(items, url.searchParams.get('q')?.trim() ?? '', now()));
+        const [, , activityId, methodId, extra] = url.pathname.split('/');
+        const item = items.find(item => item.id === activityId);
+        if (!item || extra !== undefined) throw new Problem('找不到活動。', 404);
+        const savedMethods = await readSaved('activity-methods.json');
+        const summaries = savedMethods?.snapshot === saved.snapshot ? savedMethods.methods : {};
+        if (req.method === 'GET' && !methodId) return respond(200, activityDetail(item, now(), summaries));
+        const target = item.methods.find(method => method.id === methodId && method.kind === 'method');
+        if (req.method === 'POST' && target) {
+          if (importing) throw new Problem('公告正在整理中。', 409);
+          importing = true;
+          try {
+            const sources = methodContext(item, target);
+            const generated = await summarizeActivityMethod({ title: item.title, method: target.title, sources });
+            const facts = validateMethod(generated.result, sources);
+            const updated = { ...summaries, [target.id]: { facts, model: generated.metadata, at: now().toISOString() } };
+            await save('activity-methods.json', JSON.stringify({ snapshot: saved.snapshot, methods: updated }, null, 2));
+            res.writeHead(303, { Location: '/activities/' + item.id + '#' + target.id }).end();
+            return;
+          } finally { importing = false; }
+        }
+      }
       if (req.method !== 'GET') throw new Problem('操作不支援。', 405);
-      if (url.pathname === '/') return respond(200, home(await readSaved(), url.searchParams.get('q')?.trim() ?? '', now(), await readSaved('status.json')));
       if (url.pathname === '/note') {
         const saved = await readSaved();
         if (saved) return respond(200, note(saved, now(), url.searchParams.get('q')));
