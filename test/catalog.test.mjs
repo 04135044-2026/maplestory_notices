@@ -1,11 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { website } from '../src/site.mjs';
 import { catalogFromSnapshot } from '../src/catalog.mjs';
 import { timeline } from '../src/periods.mjs';
+import { SOURCE_BATCH } from '../src/jobs.mjs';
+import { Problem } from '../src/notice.mjs';
 
 const heading = (title, size) => '<p style="font-size:' + size + 'pt;font-weight:700">【' + title + '】</p>';
 const paragraph = text => '<p>' + text + '</p>';
@@ -78,6 +80,43 @@ test('官方回溯依台北日期跨頁，待確認版本可人工發布，列�
     assert.equal((await post('/discover')).status, 303);
     assert.match(await get('/discover'), /列表檢查未完成[\s\S]*學院改版/);
     assert.equal(summaryCalls, 0);
+  } finally {
+    if (server.listening) await new Promise(resolve => server.close(resolve));
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('來源批次有上限，失敗工作可在完成其他項目後單獨重試', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'maple-source-jobs-'));
+  let failing = true;
+  const attempts = new Map();
+  const server = website({ dir, now: () => new Date('2026-11-12T14:10:00+08:00'),
+    openAnnouncementPages: async () => async () => ({
+      totalPages: 1, rows: Array.from({ length: SOURCE_BATCH + 1 }, (_, index) => ({
+        bullentinId: index + 1, title: '例行維護公告 ' + (index + 1), startDate: '2026/11/12',
+      })),
+    }),
+    fetchAnnouncement: async url => {
+      attempts.set(url, (attempts.get(url) ?? 0) + 1);
+      if (failing && url.endsWith('bid=1')) throw Object.assign(new Error('測試官網暫時無法取得'), { status: 502 });
+      return { html: '<p>例行維護來源</p>' };
+    },
+  });
+  try {
+    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+    const base = 'http://127.0.0.1:' + server.address().port;
+    const post = (path, fields = {}) => fetch(base + path, { method: 'POST', redirect: 'manual', body: new URLSearchParams(fields) });
+    const jobs = async () => (await fetch(base + '/jobs')).text();
+    assert.equal((await post('/discover')).status, 303);
+    assert.equal(attempts.size, SOURCE_BATCH);
+    const first = await jobs();
+    assert.match(first, /待處理 1 · 已完成 23 · 需重試 1[\s\S]*來源取得失敗[\s\S]*本次嘗試 2 次/);
+    assert.equal((await post('/discover/continue')).status, 303);
+    const id = first.match(/name="id" value="([a-f0-9]+)">[^<]*<button>重試這一項/)[1];
+    failing = false;
+    assert.equal((await post('/discover/retry', { id })).status, 303);
+    assert.match(await jobs(), /待處理 0 · 已完成 25 · 需重試 0/);
+    assert.deepEqual([...attempts.values()].filter(count => count > 1), [3]);
   } finally {
     if (server.listening) await new Promise(resolve => server.close(resolve));
     await rm(dir, { recursive: true, force: true });
@@ -188,11 +227,14 @@ test('從活動入口核對取得方法，Gemini 只收到指定方法的適用�
   await writeFile(join(dir, 'summary.json'), JSON.stringify({ snapshot, capturedAt: '2026-11-12T08:24:49.046Z' }));
   let imageCalls = 0;
   let methodCalls = 0;
+  let modelStatus;
   const server = website({ dir, now: () => new Date('2026-11-12T20:00:00+08:00'),
     downloadImage: async () => ({ bytes: Buffer.from('sample-image'), mime: 'image/png', version: 'sample' }),
     summarizeImage: async () => { imageCalls++; return { text: '原圖不含可辨識文字' }; },
     summarizeActivityMethod: async ({ sources }) => {
       methodCalls++;
+      if (modelStatus === 429) throw new Problem('測試額度不足', 429);
+      if (modelStatus === 422) return { result: {}, metadata: { usage: { promptTokenCount: 17 } } };
       assert.ok(sources.some(source => source.text.includes('內拉')));
       assert.ok(sources.some(source => source.scope === '共用注意事項'));
       assert.ok(sources.every(source => !source.text.includes('老手設計師') && !source.text.includes('權達開')));
@@ -229,6 +271,18 @@ test('從活動入口核對取得方法，Gemini 只收到指定方法的適用�
     const updates = await (await fetch(root + '/updates')).text();
     assert.match(updates, /來源取得 2026-11-12 16:24:49（台北時間）/);
     assert.match(updates, /摘要待重整 · 舊摘要仍可讀 · 摘要完成 2026-11-12 20:00:00（台北時間）/);
+    const stored = await readFile(join(dir, 'activity-methods.json'), 'utf8');
+    modelStatus = 429;
+    assert.equal((await fetch(root + action, { method: 'POST', redirect: 'manual' })).status, 429);
+    assert.match(await (await fetch(root + '/jobs')).text(), /模型額度或頻率受限[\s\S]*用量 未知/);
+    modelStatus = 422;
+    assert.equal((await fetch(root + action, { method: 'POST', redirect: 'manual' })).status, 422);
+    assert.match(await (await fetch(root + '/jobs')).text(), /模型輸出無效[\s\S]*promptTokenCount/);
+    assert.equal(await readFile(join(dir, 'activity-methods.json'), 'utf8'), stored);
+    assert.equal(methodCalls, 3);
+    modelStatus = undefined;
+    assert.equal((await fetch(root + action, { method: 'POST', redirect: 'manual' })).status, 303);
+    assert.match(await (await fetch(root + '/jobs')).text(), /三眼章魚直火燒烤[^<]*<\/strong> · 已完成/);
     const rendered = await select.text();
     const cached = rendered.match(/src="(\/images\/[^"]+)"/)?.[1];
     assert.equal(await (await fetch(root + cached)).text(), 'sample-image');
