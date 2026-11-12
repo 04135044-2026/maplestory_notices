@@ -24,6 +24,19 @@ export function tableRows($, table) {
   return $(table).find('tr').toArray().map(row => $(row).children('th,td').map((_, cell) => clean($(cell).text())).get());
 }
 
+export function tableLayout($, table) {
+  return $(table).find('tr').toArray().map(row => $(row).children('th,td').toArray().map(cell => {
+    const copy = $(cell).clone();
+    copy.find('br').replaceWith('\n');
+    return {
+      text: copy.text().split('\n').map(clean).filter(Boolean).join('\n'),
+      heading: cell.tagName === 'th',
+      colspan: Number($(cell).attr('colspan')) || 1,
+      rowspan: Number($(cell).attr('rowspan')) || 1,
+    };
+  }));
+}
+
 const digest = value => createHash('sha256').update(value).digest('hex').slice(0, 20);
 const pending = message => { throw new Problem('拆分待確認：' + message); };
 
@@ -99,12 +112,17 @@ export function splitNotice(html) {
   let ordinal = 0;
   function paragraphs(nodes, scope) {
     const sources = [];
+    let leading = [];
     for (const node of nodes.filter(node => ['p','table','ul','ol','li'].includes(node.tagName))) {
       const text = nodeText($, node);
       const images = imagesIn([node]);
-      if (text) sources.push({ id: `P${String(++ordinal).padStart(3, '0')}`, scope, text, images,
-        rows: node.tagName === 'table' ? tableRows($, node) : undefined });
-      else if (images.length && sources.length) sources.at(-1).images.push(...images);
+      if (text) {
+        sources.push({ id: `P${String(++ordinal).padStart(3, '0')}`, scope, text, images, beforeImages: leading,
+          rows: node.tagName === 'table' ? tableRows($, node) : undefined,
+          cells: node.tagName === 'table' ? tableLayout($, node) : undefined });
+        leading = [];
+      } else if (images.length && sources.length) sources.at(-1).images.push(...images);
+      else leading.push(...images);
     }
     return sources;
   }

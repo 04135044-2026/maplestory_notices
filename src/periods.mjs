@@ -47,7 +47,7 @@ export function timeline(item, method) {
     participation,
     claim: localClaim ? range(localClaim, sourceYears, bounds) : base?.claim ?? { source: null },
     opening: localOpen ? range(localOpen, sourceYears, bounds) : base?.opening ?? { source: null },
-    resets: own.filter(source => /初始化|重置/.test(source.text)),
+    resets: own.filter(source => !source.rows && /初始化|重置/.test(source.text)),
   };
 }
 

@@ -1,7 +1,7 @@
 import { load } from 'cheerio';
 import { createHash } from 'node:crypto';
 import { official, Problem } from './notice.mjs';
-import { tableRows } from './segmentation.mjs';
+import { tableLayout, tableRows } from './segmentation.mjs';
 
 const hash = value => createHash('sha256').update(value).digest('hex').slice(0, 20);
 const headings = /^(?:h[1-6]|p|table|ul|ol|img)$/;
@@ -23,7 +23,8 @@ export function reviewDocument(html) {
         return url.protocol === 'https:' && url.hostname === 'tw.hicdn.beanfun.com' ? url.href : null;
       } catch { return null; }
     }).get();
-    if (text || images.length) blocks.push({ id: 'B' + (blocks.length + 1), text, rows, images });
+    if (text || images.length) blocks.push({ id: 'B' + (blocks.length + 1), text, rows, images,
+      cells: rows ? tableLayout($, node) : undefined });
   }
   if (!blocks.length && body.text().trim()) blocks.push({ id: 'B1', text: body.text().trim(), images: [] });
   return { fingerprint: hash(html), blocks };
