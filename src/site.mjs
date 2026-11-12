@@ -14,6 +14,7 @@ import { answerPlayer, compareMethods, playerAssistant, searchWithAgent } from '
 import { announcementUrl, collectAnnouncements, discoveryWindow, officialAnnouncement, officialPages, saveAnnouncement } from './discovery.mjs';
 import { sourceTracking } from './tracking.mjs';
 import { jobFailure, METHOD_BATCH, SOURCE_BATCH, sourceAttempt } from './jobs.mjs';
+import { DEFAULT_SCHEDULE, dueCheck, validSchedule } from './schedule.mjs';
 
 const escape = value => String(value).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]);
 const link = '<a href="' + official + '" target="_blank" rel="noopener noreferrer">查看官方公告 ↗</a>';
@@ -231,7 +232,7 @@ function home(saved, query, now, status, hasSnapshot = Boolean(saved), listing, 
     (status ? '<p>' + escape(status) + '</p>' : '') +
     (saved?.capturedAt ? '<p>已保存摘要：' + escape(new Date(saved.capturedAt).toLocaleString('zh-TW', { timeZone: 'Asia/Taipei' })) + '（台灣時間）</p>' : '') +
     (hasSnapshot ? '<p><a href="/review">檢視與調整公告拆分</a> · <a href="/updates">來源與摘要更新</a> · <a href="/corrections">來源關聯與更正</a></p>' : '') +
-    '<p><a href="/discover">探索與回溯官方公告</a> · <a href="/tracking">活動來源追蹤</a></p>' +
+    '<p><a href="/discover">探索與回溯官方公告</a> · <a href="/tracking">活動來源追蹤</a> · <a href="/schedule">每日更新排程</a></p>' +
     '<form method="post" action="/import"><button>匯入並整理公告 19129</button></form></details>');
 }
 
@@ -262,7 +263,7 @@ function discoveryPage(window, registry, message) {
   const entries = Object.values(registry.entries).sort((a, b) => (b.date ?? '').localeCompare(a.date ?? ''));
   return page('探索官方公告', '<nav><a href="/">← 首頁</a> · <a href="/activities">查看活動</a></nav><h1>探索官方公告</h1>' +
     '<p>最近 90 天（台北時間） · ' + window.start + ' 至 ' + window.end + '</p>' +
-    '<form method="post"><button>檢查官方公告列表</button></form><p><a href="/jobs">批次進度與重試</a></p>' +
+    '<form method="post"><button>檢查官方公告列表</button></form><p><a href="/jobs">批次進度與重試</a> · <a href="/schedule">每日更新排程</a></p>' +
     '<form method="post" action="/discover/import"><p><label>手動補入官方網址 <input type="url" name="url" required></label> ' +
     '<button>保存來源</button></p></form>' + (message ? '<p role="status">' + escape(message) + '</p>' : '') +
     (run ? '<p>上次檢查 · ' + escape(formatTimestamp(run.at)) + ' · ' + run.start + ' 至 ' + run.end +
@@ -300,6 +301,22 @@ function jobsPage(registry, jobs, activeJobId) {
     (sources.some(job => job.state === 'pending') ? '<form method="post" action="/discover/continue"><button>繼續公告批次</button></form>' : '') +
     (items.length ? '<ul>' + items.map(detail).join('') + '</ul>' : '<p>目前沒有待處理或失敗項目。</p>') +
     '<p>待確認版型可從<a href="/discover">公告探索</a>開啟原文並確認拆分。</p>');
+}
+
+function schedulePage(state, enabled) {
+  const scheduled = state.scheduled;
+  const results = { running: '執行中', success: '完成', partial: '部分來源需重試', failed: '失敗', interrupted: '中斷' };
+  return page('每日更新排程', '<nav><a href="/discover">← 公告探索</a> · <a href="/jobs">批次進度與重試</a></nav>' +
+    '<h1>每日更新排程</h1><p>程式運行且電腦清醒時，依台北時間執行。恢復運行後會補查最近一次錯過的排程。</p>' +
+    (enabled ? '' : '<p>目前的伺服器未啟用背景排程。</p>') +
+    '<form method="post"><label>每日檢查時間（台北） <input type="time" name="time" required value="' +
+    escape(state.time ?? DEFAULT_SCHEDULE) + '"></label> <button>保存排程</button></form>' +
+    '<form method="post" action="/discover"><button>立即檢查官方公告</button></form>' +
+    '<dl><dt>上次成功檢查</dt><dd>' + escape(formatTimestamp(state.lastSuccessAt)) + '</dd>' +
+    '<dt>最近失敗原因</dt><dd>' + (state.lastFailure ? escape(formatTimestamp(state.lastFailure.at) + ' · ' + state.lastFailure.reason) : '尚未記錄') +
+    '</dd><dt>最近一次排程或補查</dt><dd>' + (scheduled ? escape(scheduled.day + ' · ' +
+      (scheduled.type === 'catch-up' ? '錯過排程補查' : '固定排程') + ' · ' + results[scheduled.result] +
+      ' · ' + formatTimestamp(scheduled.at)) : '尚未執行') + '</dd></dl>');
 }
 
 async function formData(req, limit = 100_000) {
@@ -569,7 +586,8 @@ function note(saved, now, query, catalogItem) {
 export function website({ dir = 'data', now = () => new Date(), fetchSource = fetchNotice, summarize = gemini,
   summarizeActivityMethod = summarizeMethod, downloadImage = fetchOfficialImage, summarizeImage = recognizeImage,
   codexGenerate = createCodexGenerator(), fetchLinkedSource = fetchCorrection, generatePlayerAssistance,
-  openAnnouncementPages = officialPages, fetchAnnouncement = officialAnnouncement } = {}) {
+  openAnnouncementPages = officialPages, fetchAnnouncement = officialAnnouncement,
+  enableSchedule = false, scheduleInterval = 30000 } = {}) {
   let importing = false;
   let activeJobId = null;
   let catalogCache;
@@ -715,7 +733,51 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
     }
     return { registry, work };
   }
-  return createServer(async (req, res) => {
+  const scheduleState = async () => await readSaved('schedule.json') ?? {};
+  const saveSchedule = state => save('schedule.json', JSON.stringify(state));
+  function recordCheck(state, report, at) {
+    const { registry, work } = report;
+    const errors = work.filter(job => job.state === 'failed');
+    const listError = registry.run?.error;
+    if (!listError && !errors.length) state.lastSuccessAt = at;
+    if (listError || errors.length) {
+      state.lastFailure = { at, reason: listError ? '列表未完成 · ' + listError :
+        errors.length + ' 筆來源需重試 · ' + errors[0].message };
+    }
+    return listError ? 'failed' : errors.length ? 'partial' : 'success';
+  }
+  async function runSchedule() {
+    if (importing) return;
+    importing = true;
+    try {
+      const state = await scheduleState();
+      const clock = now();
+      const at = clock.toISOString();
+      const firstStart = !state.startedAt;
+      state.startedAt ??= at;
+      if (state.scheduled?.result === 'running') {
+        state.scheduled.result = 'interrupted';
+        state.lastFailure = { at, reason: '上次排程中斷。請從批次進度繼續待處理工作。' };
+        await saveSchedule(state);
+      } else if (firstStart) await saveSchedule(state);
+      const due = dueCheck(clock, state);
+      if (!due) return;
+      state.scheduled = { ...due, at, result: 'running' };
+      await saveSchedule(state);
+      try {
+        const report = await discoveryWork(await discoveryRegistry(), await readSaved('activity-source.json') ?? await readSaved(), clock);
+        state.scheduled.result = recordCheck(state, report, now().toISOString());
+      } catch (error) {
+        state.scheduled.result = 'failed';
+        state.lastFailure = { at: now().toISOString(), reason: error.message };
+      }
+      await saveSchedule(state);
+    } finally {
+      importing = false;
+      activeJobId = null;
+    }
+  }
+  const server = createServer(async (req, res) => {
     let methodLocked = false;
     const lockModel = () => {
       if (importing) throw new Problem('目前正在處理另一項工作，請稍後重試。', 409);
@@ -755,6 +817,15 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
       if (req.method === 'GET' && url.pathname === '/jobs') {
         return respond(200, jobsPage(await discoveryRegistry(), await readSaved('jobs.json') ?? {}, activeJobId));
       }
+      if (url.pathname === '/schedule') {
+        if (req.method === 'GET') return respond(200, schedulePage(await scheduleState(), enableSchedule));
+        if (req.method !== 'POST') throw new Problem('操作不支援。', 405);
+        lockModel();
+        const time = (await formData(req)).get('time');
+        if (!validSchedule(time)) throw new Problem('請輸入有效的台北時間，格式為 HH:mm。');
+        await saveSchedule({ ...await scheduleState(), time });
+        return res.writeHead(303, { Location: '/schedule' }).end();
+      }
       if (['/discover', '/discover/import', '/discover/retry', '/discover/continue'].includes(url.pathname) ||
           /^\/discover\/[a-f0-9]{24}(?:\/source)?$/.test(url.pathname)) {
         const registry = await discoveryRegistry();
@@ -773,7 +844,12 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
             return res.writeHead(303, { Location: '/discover/' + job.id }).end();
           }
           const input = key === 'retry' ? (await formData(req)).get('id') : undefined;
-          await discoveryWork(registry, base, clock, { mode: key, input });
+          const report = await discoveryWork(registry, base, clock, { mode: key, input });
+          if (!key) {
+            const state = await scheduleState();
+            recordCheck(state, report, now().toISOString());
+            await saveSchedule(state);
+          }
           return res.writeHead(303, { Location: key ? '/jobs' : '/discover' }).end();
         }
         const entry = registry.entries[key];
@@ -1290,4 +1366,15 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
       }
     }
   });
+  if (enableSchedule) {
+    let timer;
+    const tick = () => runSchedule().catch(error => console.error('每日排程未能保存狀態：' + error.message));
+    server.on('listening', () => {
+      timer = setInterval(tick, scheduleInterval);
+      timer.unref();
+      void tick();
+    });
+    server.on('close', () => clearInterval(timer));
+  }
+  return server;
 }
