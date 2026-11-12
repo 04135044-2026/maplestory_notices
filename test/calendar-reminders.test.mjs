@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { calendarActivity, exportCalendar } from '../src/calendar.mjs';
+import { calendarActivity, calendarExportChanged, calendarExportRecord, exportCalendar } from '../src/calendar.mjs';
 
 test('匯出只加選取且有依據的重置提醒，跳過官方排除的首個週四', () => {
   const range = { id: 'date', text: '活動時間：2026/09/09 09:00 ~ 2026/10/20 23:59', scope: '活動共用條件與說明' };
@@ -27,4 +27,15 @@ test('匯出只加選取且有依據的重置提醒，跳過官方排除的首�
   const shared = { ...item, methods: [{ ...item.methods[0], sourceIds: [], sharedSourceIds: ['date', 'weekly'] }] };
   assert.match(exportCalendar([calendarActivity(shared)], now, 'http://localhost', { academy: ['WEEKLY'] }),
     /DTSTART:20260915T160000Z\r\nRRULE:FREQ=WEEKLY/);
+  const weekly = calendarExportRecord(calendarActivity(shared), ['WEEKLY'], undefined, now);
+  const datesOnly = calendarExportRecord(calendarActivity(shared), [], weekly, now);
+  sources[1].text = '紀錄會於每週三1:00進行初始化。';
+  const changed = calendarActivity(shared);
+  assert.equal(calendarExportChanged(changed, datesOnly), true);
+  assert.equal(calendarExportChanged(changed, calendarExportRecord(changed, [], datesOnly, now)), true);
+  assert.equal(calendarExportChanged(changed, calendarExportRecord(changed, ['WEEKLY'], datesOnly, now)), false);
+  for (const exception of ['首個週四除外', '首個週三除外，10/1暫停']) {
+    sources[1].text = '每週三0:00初始化（' + exception + '）。';
+    assert.doesNotMatch(exportCalendar([calendarActivity(shared)], now, 'http://localhost', { academy: ['WEEKLY'] }), /RRULE/);
+  }
 });

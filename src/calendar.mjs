@@ -29,9 +29,13 @@ function methodReminders(item, method) {
         const localDay = new Date(participation.start.date + 'T00:00:00Z').getUTCDay();
         first += ((weekdays.indexOf(weekday === '天' ? '日' : weekday) - localDay + 7) % 7) * day;
       }
-      const exception = /首個(?:週[日天一二三四五六]|星期[日天一二三四五六])除外/.test(source.text);
-      if (exception && weekday) first += interval;
-      else if (/除外|例外|暫停|維護後/.test(source.text)) continue;
+      const exceptions = [...source.text.matchAll(/首個(?:週|星期)([日天一二三四五六])除外/g)];
+      const rest = source.text.replace(/首個(?:週|星期)[日天一二三四五六]除外/g, '');
+      if (/除外|例外|暫停|維護後/.test(rest)) continue;
+      if (exceptions.length) {
+        if (exceptions.length !== 1 || !weekday || exceptions[0][1].replace('天', '日') !== weekday.replace('天', '日')) continue;
+        first += interval;
+      }
       if (first < start) first += interval;
       if (first <= until) rules.push({ method, frequency, first, until, source });
     }
@@ -74,6 +78,26 @@ export function exportVersion(activity, frequencies = []) {
     activity.reminders.filter(rule => frequencies.includes(rule.frequency)).map(({ method, frequency, first, until }) =>
       JSON.stringify([method.id, frequency, first, until])).sort(),
   ]);
+}
+
+const reminderVersion = (activity, frequency) => fingerprint(activity.reminders.filter(rule => rule.frequency === frequency)
+  .map(({ method, first, until }) => JSON.stringify([method.id, first, until])).sort());
+
+export function calendarExportChanged(activity, previous) {
+  if (!previous) return false;
+  if (!previous.reminderVersions) return previous.version !== exportVersion(activity, previous.frequencies);
+  return previous.version !== exportVersion(activity) || Object.entries(previous.reminderVersions)
+    .some(([frequency, version]) => version !== reminderVersion(activity, frequency));
+}
+
+export function calendarExportRecord(activity, selected, previous, at) {
+  const reminderVersions = { ...previous?.reminderVersions };
+  if (previous && !previous.reminderVersions) {
+    const changed = calendarExportChanged(activity, previous);
+    for (const frequency of previous.frequencies) reminderVersions[frequency] = changed ? previous.version : reminderVersion(activity, frequency);
+  }
+  for (const frequency of selected) reminderVersions[frequency] = reminderVersion(activity, frequency);
+  return { version: exportVersion(activity), frequencies: Object.keys(reminderVersions), reminderVersions, exportedAt: at.toISOString() };
 }
 
 export function calendarMonth(month) {
