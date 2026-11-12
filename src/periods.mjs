@@ -43,9 +43,16 @@ export function timeline(item, method) {
   const date = localDate ?? item.date;
   const permanent = /1900\/.*2100\//.test(date?.text ?? '');
   const participation = permanent ? { source: date, permanent } : range(date, sourceYears, bounds);
+  const claim = localClaim ? range(localClaim, sourceYears, bounds) : base?.claim ?? { source: null };
+  const corrected = (period, change) => {
+    if (!change) return period;
+    const end = endpoint([...change.endText.matchAll(sourceDate)][0], []);
+    if (!end || (period.start && end.date < period.start.date)) return period;
+    return { ...period, end, permanent: false, original: period, change, source: period.source ?? { text: change.quote } };
+  };
   return {
-    participation,
-    claim: localClaim ? range(localClaim, sourceYears, bounds) : base?.claim ?? { source: null },
+    participation: corrected(participation, localDate && method ? null : item.changes?.participation),
+    claim: claim.change ? claim : corrected(claim, localClaim && method ? null : item.changes?.claim),
     opening: localOpen ? range(localOpen, sourceYears, bounds) : base?.opening ?? { source: null },
     resets: own.filter(source => !source.rows && /初始化|重置/.test(source.text)),
   };

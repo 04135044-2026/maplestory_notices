@@ -5,8 +5,9 @@ import { activity, extract, fetchNotice, fields, gemini, method, official, Probl
 import { catalogFromSnapshot, methodContext, methodFacts, methodFields, summarizeMethod, validateMethod } from './catalog.mjs';
 import { manualActivity, mergeManual, reviewDocument } from './review.mjs';
 import { fetchOfficialImage, imageKey, recognizeImage } from './images.mjs';
-import { fingerprint, methodFingerprint } from './incremental.mjs';
+import { fingerprint, methodFingerprint, sourceReferences, summaryForDisplay } from './incremental.mjs';
 import { CODEX_MODEL, createCodexGenerator } from './codex.mjs';
+import { fetchCorrection, officialCorrectionUrl, verifiedSource, withCorrections } from './corrections.mjs';
 import { activityState, periodText, timeline } from './periods.mjs';
 import { rewardTypes, searchCatalog, statuses } from './search.mjs';
 
@@ -193,7 +194,7 @@ function home(saved, query, now, status, hasSnapshot = Boolean(saved), listing) 
     '<details' + (status ? ' open' : '') + '><summary>公告管理</summary>' +
     (status ? '<p>' + escape(status) + '</p>' : '') +
     (saved?.capturedAt ? '<p>已保存摘要：' + escape(new Date(saved.capturedAt).toLocaleString('zh-TW', { timeZone: 'Asia/Taipei' })) + '（台灣時間）</p>' : '') +
-    (hasSnapshot ? '<p><a href="/review">檢視與調整公告拆分</a> · <a href="/updates">來源與摘要更新</a></p>' : '') +
+    (hasSnapshot ? '<p><a href="/review">檢視與調整公告拆分</a> · <a href="/updates">來源與摘要更新</a> · <a href="/corrections">來源關聯與更正</a></p>' : '') +
     '<form method="post" action="/import"><button>匯入並整理公告 19129</button></form></details>');
 }
 
@@ -262,8 +263,16 @@ function activityNav(backHref, backText, title) {
 
 function activityDetail(item, now, summaries = {}, status = '', imageRecords = {}, provider = 'gemini') {
   const periods = timeline(item);
-  const showPeriod = (label, period) => '<dt>' + label + '</dt><dd>' + escape(periodText(period)) +
-    (period.source ? evidenceLink(period.source) : '') + '</dd>';
+  const showPeriod = (label, period, field) => {
+    const change = period.change;
+    const linked = item.linkedSources?.filter(source => source.field === field) ?? [];
+    const evidence = change
+      ? '<p>原公告 · ' + escape(periodText(period.original)) + '</p><p><a href="' + escape(change.url) +
+        '" target="_blank" rel="noopener noreferrer">查閱官方更正 ↗</a></p>'
+      : linked.length ? '<p>' + (linked.filter(entry => entry.kind === 'correction').length > 1 ? '官方更正期限有差異，待比對' : '另有來源待比對') +
+        ' <a href="/corrections?activity=' + item.id + '">查看來源關聯</a></p>' : '';
+    return '<dt>' + label + '</dt><dd>' + escape(periodText(period)) + (period.source ? evidenceLink(period.source) : '') + evidence + '</dd>';
+  };
   const cite = source => source ? (isTable(source) ? '' : escape(source.text)) +
     evidenceLink(item.sources.find(original => original.id === source.id) ?? source) : '未載明／待確認';
   const facts = (label, sources) => '<dt>' + label + '</dt>' +
@@ -318,7 +327,7 @@ function activityDetail(item, now, summaries = {}, status = '', imageRecords = {
         .filter(source => method.sourceIds.includes(source.id) || item.local.includes(source)), ownImages,
         '公告表格與圖片') + '<details><summary>摘要整理</summary>' +
       (summaries[method.id] ? '<dl>' + Object.entries(methodFields).map(([key, label]) =>
-        facts(label, summaries[method.id].facts[key].map(fact => ({ text: fact.text, id: fact.source })))).join('') + '</dl>' : '<p>尚未整理這個方法。</p>') +
+        facts(label, summaryForDisplay(summaries[method.id], methodContext(item, method))[key].map(fact => ({ text: fact.text, id: fact.source })))).join('') + '</dl>' : '<p>尚未整理這個方法。</p>') +
       '<form method="post" action="/activities/' + item.id + '/' + method.id + '"><button>用預設模型整理這個方法</button></form></details></article>';
   }).join('');
   const shared = originalFlow(item.sources, item.images, '活動共用表格與圖片');
@@ -327,8 +336,8 @@ function activityDetail(item, now, summaries = {}, status = '', imageRecords = {
     '<dl><dt>參加資格</dt><dd>' + cite(item.eligibility) +
     (item.sharedEligibility && item.sharedEligibility.text !== item.eligibility?.text
       ? '</dd><dd>版本共用資格 · ' + cite(item.sharedEligibility) : '') +
-    '</dd>' + showPeriod('參加期間', periods.participation) + showPeriod('開領時間', periods.opening) +
-    showPeriod('領獎期限', periods.claim) + '</dl>' +
+    '</dd>' + showPeriod('參加期間', periods.participation, 'participation') + showPeriod('開領時間', periods.opening) +
+    showPeriod('領獎期限', periods.claim, 'claim') + '</dl>' +
     shared + sections + '<details><summary>用訂閱 Codex 整理本批</summary><p>目前預設：' +
     (provider === 'codex' ? '訂閱 Codex' : 'Gemini') + '</p><form method="post" action="/activities/' + item.id + '/batch">' +
     item.methods.filter(target => target.kind === 'method').map(target => '<label><input type="checkbox" name="method" value="' +
@@ -380,7 +389,7 @@ function note(saved, now, query) {
 
 export function website({ dir = 'data', now = () => new Date(), fetchSource = fetchNotice, summarize = gemini,
   summarizeActivityMethod = summarizeMethod, downloadImage = fetchOfficialImage, summarizeImage = recognizeImage,
-  codexGenerate = createCodexGenerator() } = {}) {
+  codexGenerate = createCodexGenerator(), fetchLinkedSource = fetchCorrection } = {}) {
   let importing = false;
   let catalogCache;
   async function readSaved(name = 'summary.json') {
@@ -414,6 +423,10 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
     const html = await readFile(join(dir, source.snapshot), 'utf8');
     return reviewDocument(html).fingerprint === manual.fingerprint ? manual.entries : [];
   }
+  async function applyCorrections(items) {
+    const corrections = await readSaved('source-corrections.json') ?? {};
+    return items.map(item => corrections[item.id]?.length ? withCorrections(item, corrections[item.id]) : item);
+  }
   return createServer(async (req, res) => {
     let methodLocked = false;
     const respond = (status, body) => res.writeHead(status, {
@@ -440,7 +453,7 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
           if (!html.trim()) throw new Problem('官網回傳空白公告。');
           const checkedAt = now().toISOString();
           const previous = source ? await readFile(join(dir, source.snapshot), 'utf8') : null;
-          const snapshot = previous === html ? source.snapshot : '19129-' + checkedAt.replace(/[:.]/g, '-') + '.html';
+          const snapshot = previous === html ? source.snapshot : '19129-' + checkedAt.replace(/[:.]/g, '-') + '-' + fingerprint(html).slice(0, 12) + '.html';
           if (previous !== html) await save(snapshot, html);
           await save('activity-source.json', JSON.stringify({ snapshot, checkedAt }));
           const records = await readSaved('official-images.json') ?? {};
@@ -464,11 +477,12 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
         const latest = await readSaved('source-update.json');
         const records = await readSaved('official-images.json') ?? {};
         const provider = (await readSaved('model-preferences.json'))?.provider ?? 'gemini';
+        const pendingBatch = await readSaved('pending-codex-batch.json');
         const savedMethods = (await readSaved('activity-methods.json'))?.methods ?? {};
         let body = '';
         if (source) {
           try {
-            const items = mergeManual(await readCatalog(source), await confirmedItems(source));
+            const items = await applyCorrections(mergeManual(await readCatalog(source), await confirmedItems(source)));
             body = items.flatMap(item => item.methods.filter(target => target.kind === 'method').map(target => {
               const previous = savedMethods[target.id];
               const state = !previous ? '尚未整理' : previous.inputKey === methodFingerprint(item, target, records,
@@ -487,7 +501,11 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
           '<form method="post" action="/model-preferences"><label>摘要預設模型 <select name="provider">' +
           '<option value="gemini"' + (provider === 'gemini' ? ' selected' : '') + '>Gemini</option>' +
           '<option value="codex"' + (provider === 'codex' ? ' selected' : '') + '>訂閱 Codex</option></select></label> ' +
-          '<button>保存長期預設</button></form><ul>' + body + '</ul>'));
+          '<button>保存長期預設</button></form>' +
+          (pendingBatch?.ids.length ? '<form method="post" action="/activities/' + pendingBatch.activity + '/batch"><p>' +
+            escape(pendingBatch.message) + '</p>' + pendingBatch.ids.map(id =>
+            '<input type="hidden" name="method" value="' + escape(id) + '">').join('') +
+            '<button>重試上次未完成的 Codex 批次</button></form>' : '') + '<ul>' + body + '</ul>'));
       }
       if (req.method === 'POST' && url.pathname === '/model-preferences') {
         if (importing) throw new Problem('公告正在處理中。', 409);
@@ -496,6 +514,61 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
         if (!['gemini', 'codex'].includes(provider)) throw new Problem('請選擇可用的模型。');
         await save('model-preferences.json', JSON.stringify({ provider }));
         return res.writeHead(303, { Location: '/updates' }).end();
+      }
+      if (req.method === 'GET' && /^\/corrections\/official-[a-f0-9]{64}\.html$/.test(url.pathname)) {
+        const name = url.pathname.split('/').at(-1);
+        const records = await readSaved('source-corrections.json') ?? {};
+        if (!Object.values(records).flat().some(record => record.snapshot === name)) throw new Problem('找不到已保存的來源。', 404);
+        return res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8',
+          'Content-Disposition': 'attachment; filename="official-source.txt"', 'X-Content-Type-Options': 'nosniff' })
+          .end(await readFile(join(dir, name), 'utf8'));
+      }
+      if (url.pathname === '/corrections') {
+        if (req.method === 'POST') {
+          if (importing) throw new Problem('公告正在處理中。', 409);
+          importing = methodLocked = true;
+        }
+        const source = await readSaved('activity-source.json') ?? await readSaved();
+        if (!source) throw new Problem('請先匯入公告。', 404);
+        const items = mergeManual(await readCatalog(source), await confirmedItems(source));
+        const records = await readSaved('source-corrections.json') ?? {};
+        if (req.method === 'POST') {
+          const form = await formData(req);
+          const item = items.find(item => item.id === form.get('activity'));
+          if (!item) throw new Problem('請選擇要關聯的活動。');
+          const linked = await fetchLinkedSource(officialCorrectionUrl(form.get('url')));
+          const record = verifiedSource(item, form, linked, now());
+          const candidate = withCorrections(item, [record]);
+          if (record.kind === 'correction') {
+            const proposed = timeline(candidate)[record.field];
+            if (!proposed.change || (/(延長|延期)/.test(record.quote) && proposed.original.end?.date > proposed.end.date)) {
+              throw new Problem('新期限與原公告日期或更正用語不符，請核對官方內容。');
+            }
+          }
+          await save(record.snapshot, linked.html);
+          records[item.id] = [...(records[item.id] ?? []).filter(entry => entry.id !== record.id), record];
+          await save('source-corrections.json', JSON.stringify(records, null, 2));
+          return res.writeHead(303, { Location: '/corrections?activity=' + item.id }).end();
+        }
+        if (req.method !== 'GET') throw new Problem('操作不支援。', 405);
+        const selected = items.find(item => item.id === url.searchParams.get('activity'));
+        const displayed = selected ? [selected] : items.filter(item => records[item.id]?.length);
+        return respond(200, page('來源關聯與更正', '<nav><a href="/">← 首頁</a></nav><h1>來源關聯與更正</h1>' +
+          '<form method="post"><p><label>對應活動 <select name="activity">' + items.map(item => '<option value="' + item.id + '"' +
+            (item.id === selected?.id ? ' selected' : '') + '>' + escape(item.title) + '</option>').join('') + '</select></label></p>' +
+          '<p><label>官方公告網址 <input name="url" type="url" required></label></p>' +
+          '<p><label>來源用途 <select name="kind"><option value="supplement">補充／差異待確認</option>' +
+          '<option value="correction">明確官方更正</option></select></label> <label>欄位 <select name="field">' +
+          '<option value="participation">參加期限</option><option value="claim">領獎期限</option></select></label></p>' +
+          '<p><label>原文依據 <textarea name="quote" required maxlength="1500"></textarea></label></p>' +
+          '<p><label>新截止（明確更正才填） <input name="end" placeholder="YYYY/MM/DD HH:mm"></label></p><button>核對並保存來源</button></form>' +
+          displayed.map(item => '<article><h2><a href="/activities/' + item.id + '">' + escape(item.title) + '</a></h2>' +
+            '<p>原公告 · ' + escape(periodText(timeline(item).participation)) + ' · 領獎 ' + escape(periodText(timeline(item).claim)) + '</p>' +
+            (records[item.id] ?? []).map(record => '<details><summary>' + (record.kind === 'correction' ? '官方更正' : '補充／差異待確認') +
+              ' · ' + (record.field === 'claim' ? '領獎期限' : '參加期限') + ' ' + escape(record.endText ?? '') + '</summary><pre>' +
+              escape(record.quote) + '</pre><a href="' + escape(record.url) + '" target="_blank" rel="noopener noreferrer">查看來源 ↗</a> · ' +
+              '<a href="/corrections/' + record.snapshot + '" download>下載已保存來源</a></details>').join('') +
+            '</article>').join('')));
       }
       if (req.method === 'POST' && url.pathname === '/import') {
         if (importing) throw new Problem('公告正在整理中。', 409);
@@ -538,7 +611,7 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
           let items;
           try { items = await readCatalog(source); }
           catch (error) { if (!(error instanceof Problem)) throw error; items = []; }
-          items = mergeManual(items, confirmed);
+          items = await applyCorrections(mergeManual(items, confirmed));
           if (items.length) listing = {
             items, images: await readSaved('official-images.json') ?? {}, snapshot: source.snapshot,
             filters: {
@@ -622,7 +695,7 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
           }
           items = [];
         }
-        items = mergeManual(items, confirmed);
+        items = await applyCorrections(mergeManual(items, confirmed));
         if (req.method === 'GET' && url.pathname === '/activities') {
           const listed = [...items, ...(previousCatalog?.items ?? []).filter(old => !items.some(item => item.id === old.id))];
           return respond(200, activityList(listed, url.searchParams.get('q')?.trim() ?? '', now(), pending));
@@ -671,7 +744,7 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
             await save('official-images.json', JSON.stringify(imageRecords, null, 2));
           }
           const methods = await readSaved('activity-methods.json');
-          return respond(200, activityDetail(item, now(), methods?.snapshot === saved.snapshot ? methods.methods : {}, '已更新官方圖片。', imageRecords)
+          return respond(200, activityDetail(item, now(), methods?.methods ?? {}, '已更新官方圖片。', imageRecords)
             .replace('<details id="image-library">', '<details id="image-library" open>'));
         }
         if (!item || extra !== undefined) throw new Problem('找不到活動。', 404);
@@ -686,32 +759,42 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
           const ids = batch ? [...new Set((await formData(req)).getAll('method'))] : [target.id];
           const targets = item.methods.filter(entry => entry.kind === 'method' && ids.includes(entry.id));
           if (!targets.length || targets.length !== ids.length) throw new Problem('請選擇本活動的取得方法。');
-          for (const target of targets) {
-            const inputKey = methodFingerprint(item, target, imageRecords, provider, provider === 'codex' ? CODEX_MODEL : process.env.GEMINI_MODEL);
-            if (summaries[target.id]?.inputKey === inputKey) continue;
-            const sources = methodContext(item, target);
-            const input = { title: item.title, method: target.title, sources };
-            const generated = provider === 'codex' ? await summarizeMethod(input, async (instruction, input, properties) => {
-              const parts = [{ text: JSON.stringify(input) }];
-              for (const imageUrl of new Set([...target.images, ...(item.sharedImages ?? [])])) {
-                const record = imageRecords[imageKey(imageUrl)];
-                if (!record?.selected || !record.version || item.shopImages?.includes(imageUrl)) continue;
-                const bytes = await readFile(join(dir, 'image-' + record.version));
-                parts.push({ inlineData: { mimeType: record.mime, data: bytes.toString('base64') } });
-              }
-              const output = await codexGenerate({ parts, instruction,
-                schema: { type: 'object', properties, required: Object.keys(properties) } });
-              return { result: output.result, metadata: { model: output.model, usage: output.usage, provider } };
-            }) : await summarizeActivityMethod(input);
-            const known = methodFacts(item, target);
-            const facts = validateMethod(generated.result, sources, {
-              eligibility: item.eligibility ? [item.eligibility.id] : [],
-              steps: known.steps ? [known.steps.id] : [],
-              rewards: known.rewards.map(source => source.id),
-            });
-            summaries[target.id] = { facts, inputKey, model: generated.metadata, at: now().toISOString() };
-            await save('activity-methods.json', JSON.stringify({ snapshot: saved.snapshot, methods: summaries }, null, 2));
+          const remaining = new Set(ids);
+          try {
+            for (const target of targets) {
+              const inputKey = methodFingerprint(item, target, imageRecords, provider, provider === 'codex' ? CODEX_MODEL : process.env.GEMINI_MODEL);
+              if (summaries[target.id]?.inputKey === inputKey) { remaining.delete(target.id); continue; }
+              const sources = methodContext(item, target);
+              const input = { title: item.title, method: target.title, sources };
+              const generated = provider === 'codex' ? await summarizeMethod(input, async (instruction, input, properties) => {
+                const parts = [{ text: JSON.stringify(input) }];
+                for (const imageUrl of new Set([...target.images, ...(item.sharedImages ?? [])])) {
+                  const record = imageRecords[imageKey(imageUrl)];
+                  if (!record?.selected || !record.version || item.shopImages?.includes(imageUrl)) continue;
+                  const bytes = await readFile(join(dir, 'image-' + record.version));
+                  parts.push({ inlineData: { mimeType: record.mime, data: bytes.toString('base64') } });
+                }
+                const output = await codexGenerate({ parts, instruction,
+                  schema: { type: 'object', properties, required: Object.keys(properties) } });
+                return { result: output.result, metadata: { model: output.model, usage: output.usage, provider } };
+              }) : await summarizeActivityMethod(input);
+              const known = methodFacts(item, target);
+              const facts = validateMethod(generated.result, sources, {
+                eligibility: item.eligibility ? [item.eligibility.id] : [],
+                steps: known.steps ? [known.steps.id] : [],
+                rewards: known.rewards.map(source => source.id),
+              });
+              summaries[target.id] = { facts, references: sourceReferences(sources), inputKey, model: generated.metadata, at: now().toISOString() };
+              await save('activity-methods.json', JSON.stringify({ snapshot: saved.snapshot, methods: summaries }, null, 2));
+              remaining.delete(target.id);
+            }
+          } catch (error) {
+            if (batch && error instanceof Problem) {
+              await save('pending-codex-batch.json', JSON.stringify({ activity: item.id, ids: [...remaining], message: error.message }));
+            }
+            throw error;
           }
+          if (batch && (await readSaved('pending-codex-batch.json'))?.activity === item.id) await save('pending-codex-batch.json', 'null');
           return res.writeHead(303, { Location: '/activities/' + item.id + '#' + targets[0].id }).end();
         }
       }
