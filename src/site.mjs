@@ -52,6 +52,10 @@ main :target{scroll-margin-top:4rem}
 .comparison td{min-width:13rem}
 .comparison-select{display:block;width:100%;max-width:100%;font:inherit}
 .evidence-image{display:block;max-width:100%;height:auto}
+.site-tabs{display:flex;flex-wrap:wrap;gap:.4rem;border-bottom:1px solid #cddbd3;padding-bottom:.35rem}
+.site-tabs a{padding:.35rem .65rem;border-radius:.35rem;text-decoration:none}
+.site-tabs a:hover,.site-tabs a:focus-visible{text-decoration:underline}
+.site-tabs a[aria-current=page]{background:#e0ede4;font-weight:700}
 `;
 const page = (title, body) => '<!doctype html><html lang="zh-Hant"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>' + escape(title) + '</title><style>' + style + layout + '</style><main>' + body + '</main></html>';
 const imageActions = `
@@ -210,7 +214,24 @@ function catalogResults(entries, saved) {
   });
 }
 
-function home(saved, query, now, status, hasSnapshot = Boolean(saved), listing, assist) {
+function primaryTabs(active) {
+  return '<nav class="site-tabs" aria-label="主要分頁">' + [['/', '活動與獎勵'], ['/manage', '公告管理']]
+    .map(([href, label]) => '<a href="' + href + '"' + (href === active ? ' aria-current="page"' : '') + '>' + label + '</a>').join('') + '</nav>';
+}
+
+const managementBack = '<a href="/manage">← 上一頁</a>';
+
+function managementPage(saved, status, hasSnapshot) {
+  return page('公告管理', primaryTabs('/manage') + '<h1>公告管理</h1>' +
+    '<nav class="site-tabs" aria-label="公告管理功能">' +
+    '<a href="/discover">公告探索</a><a href="/tracking">活動來源追蹤</a><a href="/schedule">每日更新排程</a><a href="/jobs">批次進度與重試</a>' +
+    (hasSnapshot ? '<a href="/review">檢視與調整公告拆分</a><a href="/updates">來源與摘要更新</a><a href="/corrections">來源關聯與更正</a>' : '') + '</nav>' +
+    (status ? '<p role="status">' + escape(status) + '</p>' : '') +
+    (saved?.capturedAt ? '<p>已保存摘要 · ' + escape(formatTimestamp(saved.capturedAt)) + '</p>' : '') +
+    '<form method="post" action="/import"><button>匯入並整理公告 19129</button></form>');
+}
+
+function home(saved, query, now, hasSnapshot = Boolean(saved), listing, assist) {
   const hasSearch = query || listing?.filters.status || listing?.filters.type;
   const entries = listing ? searchCatalog(listing.items, listing.filters, now, listing.images) : [];
   const offerAssist = listing && query && (!entries.length || entries.length > 8 || assist);
@@ -218,7 +239,7 @@ function home(saved, query, now, status, hasSnapshot = Boolean(saved), listing, 
     searchResults(saved, query, now);
   if (assist) nameResults = entries.length || !assist.matches?.length
     ? '<section><h2>名稱搜尋結果</h2>' + nameResults + '</section>' : '';
-  return page('新楓之谷公告懶人包', '<h1>新楓之谷公告懶人包</h1><form method="get" action="/"><label for="q">搜尋獎勵或活動</label> <input id="q" name="q" value="' +
+  return page('新楓之谷公告懶人包', primaryTabs('/') + '<h1>新楓之谷公告懶人包</h1><form method="get" action="/"><label for="q">搜尋獎勵或活動</label> <input id="q" name="q" value="' +
     escape(query) + '"> ' + (listing ? filterOptions('state', statuses, listing.filters.status, '活動狀態') + ' ' +
       filterOptions('type', rewardTypes, listing.filters.type, '獎勵類型') + ' ' : '') +
     '<button>搜尋</button>' + (offerAssist ? ' <button formmethod="post" formaction="/assist/search">用 Agent 搜尋</button>' : '') +
@@ -227,19 +248,13 @@ function home(saved, query, now, status, hasSnapshot = Boolean(saved), listing, 
       assist.matches.length ? catalogResults(assist.matches) + assistantModel(assist.metadata) :
         '<p>已收錄的活動與獎勵沒有明確符合的結果。</p>') + '</section>' : '') +
     nameResults +
-    (hasSnapshot || listing ? '<p><a href="/activities">查看全部已收錄活動</a></p>' : '') +
-    '<details' + (status ? ' open' : '') + '><summary>公告管理</summary>' +
-    (status ? '<p>' + escape(status) + '</p>' : '') +
-    (saved?.capturedAt ? '<p>已保存摘要：' + escape(new Date(saved.capturedAt).toLocaleString('zh-TW', { timeZone: 'Asia/Taipei' })) + '（台灣時間）</p>' : '') +
-    (hasSnapshot ? '<p><a href="/review">檢視與調整公告拆分</a> · <a href="/updates">來源與摘要更新</a> · <a href="/corrections">來源關聯與更正</a></p>' : '') +
-    '<p><a href="/discover">探索與回溯官方公告</a> · <a href="/tracking">活動來源追蹤</a> · <a href="/schedule">每日更新排程</a></p>' +
-    '<form method="post" action="/import"><button>匯入並整理公告 19129</button></form></details>');
+    (hasSnapshot || listing ? '<p><a href="/activities">查看全部已收錄活動</a></p>' : ''));
 }
 
 function reviewPage(document, automatic, previous, message, route = '/review', officialUrl) {
   const options = automatic.flatMap(item => item.methods.filter(method => method.kind === 'method')
     .map(method => '<option value="' + method.id + '">' + escape(item.title + ' › ' + method.title) + '</option>')).join('');
-  return page('檢視公告拆分', '<nav><a href="/">← 首頁</a> · <a href="/activities">查看活動</a></nav><h1>檢視公告拆分</h1>' +
+  return page('檢視公告拆分', '<nav>' + managementBack + '</nav><h1>檢視公告拆分</h1>' +
     '<p>' + escape(message) + '</p>' +
     (previous && previous.fingerprint !== document.fingerprint ? '<p role="status">來源已變更，舊人工歸屬需重新核對。</p>' : '') +
     '<p><a href="' + route + '/source" download>下載完整來源快照</a>' +
@@ -261,9 +276,11 @@ function discoveryPage(window, registry, message) {
   const run = registry.run;
   const labels = { version: '版本公告', routine: '例行公告', related: '相關異動' };
   const entries = Object.values(registry.entries).sort((a, b) => (b.date ?? '').localeCompare(a.date ?? ''));
-  return page('探索官方公告', '<nav><a href="/">← 首頁</a> · <a href="/activities">查看活動</a></nav><h1>探索官方公告</h1>' +
+  const hasBatchWork = Object.values(registry.queue ?? {}).some(job => ['pending', 'failed'].includes(job.state));
+  return page('探索官方公告', '<nav>' + managementBack + '</nav><h1>探索官方公告</h1>' +
     '<p>最近 90 天（台北時間） · ' + window.start + ' 至 ' + window.end + '</p>' +
-    '<form method="post"><button>檢查官方公告列表</button></form><p><a href="/jobs">批次進度與重試</a> · <a href="/schedule">每日更新排程</a></p>' +
+    '<form method="post"><button>檢查官方公告列表</button></form>' +
+    (hasBatchWork ? '<p><a href="/jobs">處理待辦或重試公告</a></p>' : '') +
     '<form method="post" action="/discover/import"><p><label>手動補入官方網址 <input type="url" name="url" required></label> ' +
     '<button>保存來源</button></p></form>' + (message ? '<p role="status">' + escape(message) + '</p>' : '') +
     (run ? '<p>上次檢查 · ' + escape(formatTimestamp(run.at)) + ' · ' + run.start + ' 至 ' + run.end +
@@ -281,7 +298,7 @@ function discoveryPage(window, registry, message) {
 
 function jobsPage(registry, jobs, activeJobId) {
   const sources = Object.values(registry.queue ?? {});
-  const labels = { pending: '待處理', done: '已完成', failed: '需重試' };
+  const labels = { pending: '待處理', done: '已完成', failed: '需重試', removed: '公告已下架' };
   const items = [...sources.filter(job => job.state !== 'done'), ...Object.values(jobs)];
   const detail = job => '<li><strong>' + escape(job.title ?? job.url) + '</strong> · ' + (job.id === activeJobId ? '處理中' : labels[job.state]) +
     (job.label ? ' · ' + escape(job.label) : '') + (job.message ? '<p>' + escape(job.message) + '</p>' : '') +
@@ -290,23 +307,24 @@ function jobsPage(registry, jobs, activeJobId) {
       ' · 用量 ' + (job.usage ? escape(JSON.stringify(job.usage)) : '未知') + '</p>' : '') +
     (job.url ? '<p><a href="' + escape(job.url) + '">官方來源</a></p>' : '') +
     (job.activity ? '<p><a href="/activities/' + job.activity + '">查看活動</a></p>' : '') +
-    (job.state === 'done' || job.id === activeJobId ? '' : '<form method="post" action="' + escape(job.action) + '">' +
+    (!['pending', 'failed'].includes(job.state) || job.id === activeJobId ? '' : '<form method="post" action="' + escape(job.action) + '">' +
       Object.entries(job.fields).map(([name, value]) => '<input type="hidden" name="' + escape(name) +
         '" value="' + escape(value) + '">').join('') + '<button>' + (job.state === 'failed' ? '重試這一項' : '處理這一項') +
-      '</button></form>') + '</li>';
-  return page('批次進度與重試', '<nav><a href="/discover">← 公告探索</a> · <a href="/updates">來源與摘要更新</a></nav>' +
+      '</button></form>') +
+    (job.url && job.state === 'failed' && job.id !== activeJobId ? '<form method="post" action="/discover/removed">' +
+      '<input type="hidden" name="id" value="' + escape(job.id) + '"><button>標記公告已下架</button></form>' : '') + '</li>';
+  return page('批次進度與重試', '<nav>' + managementBack + '</nav>' +
     '<h1>批次進度與重試</h1><p>公告來源 · 待處理 ' + sources.filter(job => job.state === 'pending').length +
     ' · 已完成 ' + sources.filter(job => job.state === 'done').length + ' · 需重試 ' +
     sources.filter(job => job.state === 'failed').length + '</p>' +
     (sources.some(job => job.state === 'pending') ? '<form method="post" action="/discover/continue"><button>繼續公告批次</button></form>' : '') +
-    (items.length ? '<ul>' + items.map(detail).join('') + '</ul>' : '<p>目前沒有待處理或失敗項目。</p>') +
-    '<p>待確認版型可從<a href="/discover">公告探索</a>開啟原文並確認拆分。</p>');
+    (items.length ? '<ul>' + items.map(detail).join('') + '</ul>' : '<p>目前沒有待處理或失敗項目。</p>'));
 }
 
 function schedulePage(state, enabled) {
   const scheduled = state.scheduled;
   const results = { running: '執行中', success: '完成', partial: '部分來源需重試', failed: '失敗', interrupted: '中斷' };
-  return page('每日更新排程', '<nav><a href="/discover">← 公告探索</a> · <a href="/jobs">批次進度與重試</a></nav>' +
+  return page('每日更新排程', '<nav>' + managementBack + '</nav>' +
     '<h1>每日更新排程</h1><p>程式運行且電腦清醒時，依台北時間執行。恢復運行後會補查最近一次錯過的排程。</p>' +
     (enabled ? '' : '<p>目前的伺服器未啟用背景排程。</p>') +
     '<form method="post"><label>每日檢查時間（台北） <input type="time" name="time" required value="' +
@@ -316,7 +334,8 @@ function schedulePage(state, enabled) {
     '<dt>最近失敗原因</dt><dd>' + (state.lastFailure ? escape(formatTimestamp(state.lastFailure.at) + ' · ' + state.lastFailure.reason) : '尚未記錄') +
     '</dd><dt>最近一次排程或補查</dt><dd>' + (scheduled ? escape(scheduled.day + ' · ' +
       (scheduled.type === 'catch-up' ? '錯過排程補查' : '固定排程') + ' · ' + results[scheduled.result] +
-      ' · ' + formatTimestamp(scheduled.at)) : '尚未執行') + '</dd></dl>');
+      ' · ' + formatTimestamp(scheduled.at)) : '尚未執行') + '</dd></dl>' +
+    (['partial', 'interrupted'].includes(scheduled?.result) ? '<p><a href="/jobs">前往批次進度與重試</a></p>' : ''));
 }
 
 async function formData(req, limit = 100_000) {
@@ -695,7 +714,7 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
     if (mode === 'manual') work = [enqueue({ url: announcementUrl(input) })];
     else if (mode === 'retry') {
       const job = /^[a-f0-9]{24}$/.test(input ?? '') ? queue[input] : undefined;
-      if (!job || job.state === 'done') throw new Problem('找不到待處理的公告工作。', 404);
+      if (!job || !['pending', 'failed'].includes(job.state)) throw new Problem('找不到待處理的公告工作。', 404);
       work = [job];
     } else {
       if (mode !== 'continue') {
@@ -748,6 +767,9 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
   }
   async function runSchedule() {
     if (importing) return;
+    const observed = await scheduleState();
+    if (observed.startedAt && observed.scheduled?.result !== 'running' && !dueCheck(now(), observed)) return;
+    if (importing || !server.listening) return;
     importing = true;
     try {
       const state = await scheduleState();
@@ -811,11 +833,16 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
               escape(item.reason) + '</li>').join('') + '</ul><form method="post" action="/discover/import">' +
             '<input type="hidden" name="url" value="' + escape(source) + '"><button>手動重新取得來源</button></form></details>';
         }).join('');
-        return respond(200, page('活動來源追蹤', '<nav><a href="/discover">← 公告探索</a></nav><h1>活動來源追蹤</h1>' +
+        return respond(200, page('活動來源追蹤', '<nav>' + managementBack + '</nav><h1>活動來源追蹤</h1>' +
           (details || '<p>確認活動後即可查看來源追蹤狀態。</p>')));
       }
       if (req.method === 'GET' && url.pathname === '/jobs') {
         return respond(200, jobsPage(await discoveryRegistry(), await readSaved('jobs.json') ?? {}, activeJobId));
+      }
+      if (req.method === 'GET' && url.pathname === '/manage') {
+        const saved = await readSaved();
+        const source = await readSaved('activity-source.json') ?? saved;
+        return respond(200, managementPage(saved, await readSaved('status.json'), Boolean(source) || (await discoveredItems()).length > 0));
       }
       if (url.pathname === '/schedule') {
         if (req.method === 'GET') return respond(200, schedulePage(await scheduleState(), enableSchedule));
@@ -826,7 +853,7 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
         await saveSchedule({ ...await scheduleState(), time });
         return res.writeHead(303, { Location: '/schedule' }).end();
       }
-      if (['/discover', '/discover/import', '/discover/retry', '/discover/continue'].includes(url.pathname) ||
+      if (['/discover', '/discover/import', '/discover/retry', '/discover/continue', '/discover/removed'].includes(url.pathname) ||
           /^\/discover\/[a-f0-9]{24}(?:\/source)?$/.test(url.pathname)) {
         const registry = await discoveryRegistry();
         const base = await readSaved('activity-source.json') ?? await readSaved();
@@ -835,6 +862,16 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
         const [, , key, subpage] = url.pathname.split('/');
         if (req.method === 'GET' && !key) return respond(200, discoveryPage(window, registry));
         if (req.method === 'POST') lockModel();
+        if (req.method === 'POST' && key === 'removed') {
+          const id = (await formData(req)).get('id') ?? '';
+          const job = /^[a-f0-9]{24}$/.test(id) ? registry.queue?.[id] : undefined;
+          if (job?.state !== 'failed') throw new Problem('找不到需重試的公告工作。', 404);
+          job.state = 'removed';
+          job.removedAt = clock.toISOString();
+          if (registry.run) registry.run.failures = registry.run.failures.filter(entry => entry.id !== id);
+          await save('discovery.json', JSON.stringify(registry));
+          return res.writeHead(303, { Location: '/jobs' }).end();
+        }
         if (req.method === 'POST' && (!key || ['import', 'retry', 'continue'].includes(key))) {
           if (key === 'import') {
             const input = (await formData(req)).get('url')?.trim() ?? '';
@@ -932,11 +969,11 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
             })).join('');
           } catch (error) { if (!(error instanceof Problem)) throw error; body = '<li>' + escape(error.message) + ' <a href="/review">檢視拆分</a></li>'; }
         }
-        return respond(200, page('來源與摘要更新', '<nav><a href="/">← 首頁</a></nav><h1>來源與摘要更新</h1>' +
+        return respond(200, page('來源與摘要更新', '<nav>' + managementBack + '</nav><h1>來源與摘要更新</h1>' +
           '<p>來源取得 ' + escape(formatTimestamp(source?.checkedAt ?? source?.capturedAt)) + '</p>' +
           (latest ? '<p>' + (latest.changed ? '來源已更新' : '公告文字未變') + ' · 已變更圖片 ' + latest.images +
             ' 張 · 無法查驗圖片 ' + latest.failed + ' 張</p>' : '') +
-          '<form method="post"><button>重新取得官方來源</button></form><p><a href="/jobs">批次進度與重試</a></p>' +
+          '<form method="post"><button>重新取得官方來源</button></form>' +
           '<form method="post" action="/model-preferences"><label>摘要預設模型 <select name="provider">' +
           '<option value="gemini"' + (provider === 'gemini' ? ' selected' : '') + '>Gemini</option>' +
           '<option value="codex"' + (provider === 'codex' ? ' selected' : '') + '>訂閱 Codex</option></select></label> ' +
@@ -992,7 +1029,7 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
         if (req.method !== 'GET') throw new Problem('操作不支援。', 405);
         const selected = items.find(item => item.id === url.searchParams.get('activity'));
         const displayed = selected ? [selected] : items.filter(item => records[item.id]?.length);
-        return respond(200, page('來源關聯與更正', '<nav><a href="/">← 首頁</a></nav><h1>來源關聯與更正</h1>' +
+        return respond(200, page('來源關聯與更正', '<nav>' + managementBack + '</nav><h1>來源關聯與更正</h1>' +
           '<form method="post"><p><label>對應活動 <select name="activity">' + items.map(item => '<option value="' + item.id + '"' +
             (item.id === selected?.id ? ' selected' : '') + '>' + escape(item.title) + '</option>').join('') + '</select></label></p>' +
           '<p><label>官方公告網址 <input name="url" type="url" required></label></p>' +
@@ -1037,7 +1074,7 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
           if (!(error instanceof Problem)) throw error;
           const status = (sourceSaved ? '已保存來源，摘要待更新。' : '本次來源取得未完成。') + error.message;
           await save('status.json', JSON.stringify(status));
-          return respond(error.status, home(await readSaved(), '', now(), status, Boolean(await readSaved('activity-source.json'))));
+          return respond(error.status, managementPage(await readSaved(), status, Boolean(await readSaved('activity-source.json'))));
         } finally { importing = false; }
       }
       const agentSearch = req.method === 'POST' && url.pathname === '/assist/search';
@@ -1070,7 +1107,7 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
             status = error.status;
           }
         }
-        return respond(status, home(saved, query, now(), await readSaved('status.json'), Boolean(source), listing, assist));
+        return respond(status, home(saved, query, now(), Boolean(source), listing, assist));
       }
       if (url.pathname === '/compare' && ['GET', 'POST'].includes(req.method)) {
         const source = await readSaved('activity-source.json') ?? await readSaved();
