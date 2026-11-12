@@ -12,6 +12,7 @@ import { activityState, periodText, timeline } from './periods.mjs';
 import { rewardTypes, searchCatalog, statuses } from './search.mjs';
 import { answerPlayer, compareMethods, playerAssistant, searchWithAgent } from './player-assist.mjs';
 import { announcementUrl, collectAnnouncements, discoveryWindow, officialAnnouncement, officialPages, saveAnnouncement } from './discovery.mjs';
+import { sourceTracking } from './tracking.mjs';
 
 const escape = value => String(value).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]);
 const link = '<a href="' + official + '" target="_blank" rel="noopener noreferrer">查看官方公告 ↗</a>';
@@ -229,7 +230,7 @@ function home(saved, query, now, status, hasSnapshot = Boolean(saved), listing, 
     (status ? '<p>' + escape(status) + '</p>' : '') +
     (saved?.capturedAt ? '<p>已保存摘要：' + escape(new Date(saved.capturedAt).toLocaleString('zh-TW', { timeZone: 'Asia/Taipei' })) + '（台灣時間）</p>' : '') +
     (hasSnapshot ? '<p><a href="/review">檢視與調整公告拆分</a> · <a href="/updates">來源與摘要更新</a> · <a href="/corrections">來源關聯與更正</a></p>' : '') +
-    '<p><a href="/discover">探索與回溯官方公告</a></p>' +
+    '<p><a href="/discover">探索與回溯官方公告</a> · <a href="/tracking">活動來源追蹤</a></p>' +
     '<form method="post" action="/import"><button>匯入並整理公告 19129</button></form></details>');
 }
 
@@ -635,6 +636,22 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
       if (req.method === 'POST' && req.headers['sec-fetch-site'] && !['same-origin', 'none'].includes(req.headers['sec-fetch-site'])) {
         throw new Problem('請從本機網站操作。', 403);
       }
+      if (req.method === 'GET' && url.pathname === '/tracking') {
+        const registry = await discoveryRegistry();
+        const items = await browsableItems(await readSaved('activity-source.json') ?? await readSaved());
+        const sources = sourceTracking(items, registry.entries, now());
+        const names = new Map(Object.values(registry.entries).map(entry => [entry.url, entry.title]));
+        const details = [...sources].map(([source, activities]) => {
+          const tracking = activities.some(item => item.track);
+          return '<details><summary>' + (tracking ? '持續追蹤' : '已停止自動追蹤') + ' · ' +
+            escape(names.get(source) ?? (source === official ? '公告 19129' : source)) + '</summary><ul>' +
+            activities.map(item => '<li><a href="/activities/' + item.id + '">' + escape(item.title) + '</a> · ' +
+              escape(item.reason) + '</li>').join('') + '</ul><form method="post" action="/discover/import">' +
+            '<input type="hidden" name="url" value="' + escape(source) + '"><button>手動重新取得來源</button></form></details>';
+        }).join('');
+        return respond(200, page('活動來源追蹤', '<nav><a href="/discover">← 公告探索</a></nav><h1>活動來源追蹤</h1>' +
+          (details || '<p>確認活動後即可查看來源追蹤狀態。</p>')));
+      }
       if (url.pathname === '/discover' || url.pathname === '/discover/import' ||
           /^\/discover\/[a-f0-9]{24}(?:\/source)?$/.test(url.pathname)) {
         const registry = await discoveryRegistry();
@@ -653,7 +670,7 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
             if (entry.existing) {
               try {
                 catalogFromSnapshot(await readFile(join(dir, entry.snapshot), 'utf8'));
-                if (!base) await save('activity-source.json', JSON.stringify({ snapshot: entry.snapshot, checkedAt: clock.toISOString() }));
+                await save('activity-source.json', JSON.stringify({ snapshot: entry.snapshot, checkedAt: clock.toISOString() }));
                 entry.active = !base || items.some(item => item.id.startsWith('beanfun-19129-'));
               } catch (error) {
                 if (!(error instanceof Problem)) throw error;
@@ -672,6 +689,14 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
             return res.writeHead(303, { Location: '/discover/' + fingerprint(candidate.url).slice(0, 24) }).end();
           }
           const { candidates, ...run } = await collectAnnouncements(openAnnouncementPages, clock);
+          const tracking = sourceTracking(items, registry.entries, clock);
+          const existing = new Map(Object.values(registry.entries).map(entry => [entry.url, entry]));
+          const selected = new Map(candidates.filter(candidate =>
+            !tracking.has(candidate.url) || tracking.get(candidate.url).some(item => item.track)).map(candidate => [candidate.url, candidate]));
+          for (const [url, activities] of tracking) {
+            if (activities.some(item => item.track) && !selected.has(url)) selected.set(url, existing.get(url) ?? { url });
+          }
+          const work = [...selected.values()];
           const failures = [];
           let saved = 0;
           const scan = async group => {
@@ -680,9 +705,9 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
               catch (error) { failures.push({ ...candidate, error: error.message }); }
             }));
           };
-          await scan(candidates.filter(candidate => candidate.kind === 'version'));
+          await scan(work.filter(candidate => candidate.kind === 'version' || candidate.url === official));
           if (!base) items = await browsableItems(await readSaved('activity-source.json'));
-          await scan(candidates.filter(candidate => candidate.kind !== 'version'));
+          await scan(work.filter(candidate => candidate.kind !== 'version' && candidate.url !== official));
           registry.run = { ...run, at: clock.toISOString(), candidates: candidates.length, saved, failures };
           await save('discovery.json', JSON.stringify(registry));
           return res.writeHead(303, { Location: '/discover' }).end();
