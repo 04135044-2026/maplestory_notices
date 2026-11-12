@@ -29,6 +29,10 @@ function range(source, years, bounds) {
   return { source };
 }
 
+export function versionPeriod(item) {
+  return range(item.sources.find(source => source.scope.startsWith('版本共用期間')), []);
+}
+
 export function timeline(item, method) {
   const manualRanges = item.template === 'manual-v1' ? item.local.filter(source =>
     /^\d{4}\/\d{1,2}\/\d{1,2}(?:\s+\d{1,2}:\d{2})?\s*[~～]\s*\d{4}\/\d{1,2}\/\d{1,2}(?:\s+\d{1,2}:\d{2})?$/.test(source.text)

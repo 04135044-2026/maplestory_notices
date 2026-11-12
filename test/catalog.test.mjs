@@ -351,6 +351,12 @@ test('網站保留補充來源，只有明示更正才更新參加期限', async
     const detail = () => fetch(root + '/activities/' + item.id).then(response => response.text());
     const month = await fetch(root + '/calendar?month=2026-10').then(response => response.text());
     assert.match(month, /datetime="2026-10-21"[\s\S]*開始[\s\S]*三眼章魚直火燒烤/);
+    assert.match(month, /class="calendar-band"[^>]*grid-column:3\/span 5/);
+    assert.match(month, /1 項開始/);
+    const selectedDay = await fetch(root + '/calendar?month=2026-10&day=2026-10-21').then(response => response.text());
+    assert.match(selectedDay, /id="calendar-date-details"[\s\S]*10\/21 活動清單[\s\S]*三眼章魚直火燒烤/);
+    const filteredMonth = await fetch(root + '/calendar?month=2026-10&watched=1').then(response => response.text());
+    assert.doesNotMatch(filteredMonth, /class="calendar-band"/);
     const exportResponse = await fetch(root + '/calendar', { method: 'POST', body: new URLSearchParams({ activity: item.id }) });
     assert.match(exportResponse.headers.get('content-type'), /^text\/calendar/);
     const calendar = await exportResponse.text();
