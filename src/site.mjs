@@ -11,8 +11,41 @@ import { rewardTypes, searchCatalog, statuses } from './search.mjs';
 const escape = value => String(value).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]);
 const link = '<a href="' + official + '" target="_blank" rel="noopener noreferrer">查看官方公告 ↗</a>';
 const style = 'body{margin:0;background:#f6f5ef;color:#252e26;font:17px/1.65 system-ui,sans-serif}main{max-width:48rem;margin:auto;padding:2rem 1rem}h1,h2{line-height:1.25}a{color:#17563d}article,details{background:white;border:1px solid #d9e1d7;padding:1rem;margin:1rem 0;border-radius:12px}input,button{font:inherit;padding:.45rem .65rem}button{cursor:pointer}dt{font-weight:700}dd{margin:0 0 1rem}pre{white-space:pre-wrap;overflow-wrap:anywhere}nav{margin-bottom:1rem}';
-const page = (title, body) => '<!doctype html><html lang="zh-Hant"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>' + escape(title) + '</title><style>' + style + '</style><main>' + body + '</main></html>';
+const layout = `
+main:has(.activity-grid){max-width:72rem}
+summary{cursor:pointer;font-weight:700}
+.activity-family{--accent:#32664d;border-top:3px solid var(--accent);margin:1.5rem 0 2rem;padding-top:.65rem}
+.activity-family[data-tone="1"]{--accent:#485993}
+.activity-family[data-tone="2"]{--accent:#93532c}
+.activity-family[data-tone="3"]{--accent:#765086}
+.activity-family[data-tone="4"]{--accent:#32646f}
+.activity-family>h2{color:var(--accent);margin:.25rem 0 .8rem;font-size:1.3rem}
+.activity-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,16rem),1fr));gap:.8rem}
+.activity-grid>article{margin:0;padding:.85rem;border-top:3px solid var(--accent);min-width:0}
+.activity-grid h2,.activity-grid h3{font-size:1.05rem;line-height:1.35;margin:.45rem 0;overflow-wrap:anywhere}
+.activity-grid p{font-size:.9rem;margin:.35rem 0}
+.event-label{display:inline-block;border:1px solid #cfdad2;border-radius:.4rem;padding:.05rem .4rem;color:#405449;font-size:.82rem}
+.image-preview{border:0;padding:0;margin:.5rem 0;background:transparent}
+.image-preview img{display:block;max-width:100%;width:auto;height:auto;max-height:min(65vh,30rem);object-fit:contain;margin:.6rem 0}
+.source-panel article:target{border-color:#17563d;outline:2px solid #17563d}
+`;
+const page = (title, body) => '<!doctype html><html lang="zh-Hant"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>' + escape(title) + '</title><style>' + style + layout + '</style><main>' + body + '</main></html>';
 const imageActions = `
+function revealSource(hash) {
+  if (!hash) return;
+  const target = document.getElementById(hash.slice(1));
+  const panel = target?.closest('.source-panel');
+  if (panel && !panel.open) {
+    panel.open = true;
+    target.scrollIntoView();
+  }
+}
+revealSource(location.hash);
+window.addEventListener('hashchange', () => revealSource(location.hash));
+document.addEventListener('click', event => {
+  const link = event.target.closest('a[href^="#"]');
+  if (link) revealSource(link.hash);
+});
 document.addEventListener('submit', async event => {
   const form = event.target;
   const card = form.closest('#image-library article');
@@ -35,8 +68,10 @@ document.addEventListener('submit', async event => {
     const slot = document.getElementById(slotId);
     const newSlot = documentAfter.getElementById(slotId);
     const previousTop = button.getBoundingClientRect().top;
+    const wasPreviewing = card.querySelector('.image-preview')?.open;
     if (slot && newSlot) slot.replaceChildren(...newSlot.childNodes);
     card.replaceChildren(...newCard.childNodes);
+    if (wasPreviewing && card.querySelector('.image-preview')) card.querySelector('.image-preview').open = true;
     const next = [...card.querySelectorAll('button')].find(entry => entry.value === button.value ||
       (button.value === 'select' && entry.value === 'remove') || (button.value === 'remove' && entry.value === 'select'));
     if (next) {
@@ -90,16 +125,34 @@ function filterOptions(name, values, value, label) {
     values.map(option => '<option' + (option === value ? ' selected' : '') + '>' + option + '</option>').join('') + '</select></label>';
 }
 
+const familyTitle = item => item.pageTitle?.trim() || '未分組活動';
+const familyLabel = item => item.groupTitle ? familyTitle(item) + ' › ' + item.groupTitle : familyTitle(item);
+const eventLabel = item => '<span class="event-label">' + escape(familyLabel(item)) + '</span>';
+
+function activityGroups(entries, itemOf, render) {
+  const groups = new Map();
+  for (const entry of entries) {
+    const title = familyTitle(itemOf(entry));
+    if (!groups.has(title)) groups.set(title, []);
+    groups.get(title).push(entry);
+  }
+  return [...groups].map(([title, cards]) => {
+    const tone = [...title].reduce((total, char) => (total * 31 + char.codePointAt(0)) % 5, 0);
+    return '<section class="activity-family" data-tone="' + tone + '"><h2>' + escape(title) +
+      '</h2><div class="activity-grid">' + cards.map(render).join('') + '</div></section>';
+  }).join('');
+}
+
 function catalogResults(items, filters, now, images, saved) {
   const entries = searchCatalog(items, filters, now, images);
   if (!entries.length) return '<p>在已收錄的公告 19129 活動及獎勵中找不到符合的結果。</p>';
-  return entries.map(({ item, method: target, reward, state, periods, image }) => {
+  return activityGroups(entries, entry => entry.item, ({ item, method: target, reward, state, periods, image }) => {
     const legacy = saved && reward && item.title === activity && target.title === method &&
       matchingRewards(saved.notice, reward.name).some(entry => entry.name === reward.name && entry.quantity === reward.quantity);
     const href = legacy ? '/note?q=' + encodeURIComponent(reward.name) + '#method' :
       '/activities/' + item.id + (target ? '#' + target.id : '');
     const title = reward ? reward.name + (reward.quantity ? ' ×' + reward.quantity : '') : target?.title ?? item.title;
-    return '<article><h2><a href="' + href + '">' + escape(title) + '</a></h2>' +
+    return '<article>' + eventLabel(item) + '<h3><a href="' + href + '">' + escape(title) + '</a></h3>' +
       (reward ? '<p>' + escape(item.title + ' › ' + target.title) + ' · ' + escape(reward.type) +
         (reward.group ? ' · ' + escape(reward.group) : '') + (reward.possible ? ' · 可能獎勵' : '') + '</p>' : '') +
       '<p>' + escape(state) + ' · ' + escape(periodText(periods.participation)) + '</p>' +
@@ -108,7 +161,7 @@ function catalogResults(items, filters, now, images, saved) {
       (image ? '<img loading="lazy" style="max-width:160px" src="/images/' + image + '" alt="' + escape(reward.name) + '">' :
         reward ? '<p>尚無外觀圖片</p>' : '') +
       '<p><a href="' + href + '">' + (reward ? '查看取得方式 →' : '查看活動 →') + '</a></p></article>';
-  }).join('');
+  });
 }
 
 function home(saved, query, now, status, hasSnapshot = Boolean(saved), listing) {
@@ -156,15 +209,15 @@ async function formData(req) {
 
 function activityList(activities, query, now, pending = '') {
   const entries = activities.filter(item => !query || item.title.includes(query) || item.methods.some(method => method.title.includes(query)));
-  return page('公告 19129 活動', '<nav><a href="/">← 首頁</a></nav><h1>' + escape(activities[0].pageTitle) +
+  return page('活動清單', '<nav><a href="/">← 首頁</a></nav><h1>活動清單' +
     '</h1><p>' + link + '</p>' + (pending ? '<p>' + escape(pending) + ' <a href="/review">檢視來源</a></p>' : '') +
     '<form><label for="q">活動名稱</label> <input id="q" name="q" value="' + escape(query) +
     '"> <button>搜尋</button></form>' +
-    (entries.length ? entries.map(item => {
+    (entries.length ? activityGroups(entries, item => item, item => {
       const periods = timeline(item);
-      return '<article><h2><a href="/activities/' + item.id + '">' + escape(item.title) + '</a></h2><p>' +
-        (item.groupTitle ? escape(item.groupTitle) + ' · ' : '') + activityState(periods, now) + ' · ' + escape(periodText(periods.participation)) + '</p></article>';
-    }).join('') : '<p>查無符合的活動。</p>'));
+      return '<article>' + eventLabel(item) + '<h3><a href="/activities/' + item.id + '">' + escape(item.title) + '</a></h3><p>' +
+        activityState(periods, now) + ' · ' + escape(periodText(periods.participation)) + '</p></article>';
+    }) : '<p>查無符合的活動。</p>'));
 }
 
 function activityDetail(item, now, summaries = {}, status = '', imageRecords = {}) {
@@ -212,23 +265,27 @@ function activityDetail(item, now, summaries = {}, status = '', imageRecords = {
       methodContext(item, method).filter(source => method.sourceIds.includes(source.id) || item.local.includes(source))
         .map(source => '<pre>' + cite(source) + '</pre>').join('') + '</details></article>';
   }).join('');
-  return page(item.title, '<nav><a href="/activities">← 全部活動</a></nav><h1>' + escape(item.title) + '</h1><p>' +
+  return page(item.title, '<nav><a href="/activities">← 全部活動</a></nav>' + eventLabel(item) + '<h1>' + escape(item.title) + '</h1><p>' +
     activityState(periods, now) + ' · ' + link + '</p>' + (status ? '<p role="status">' + escape(status) + '</p>' : '') +
     '<dl><dt>參加資格</dt><dd>' + cite(item.eligibility) +
     (item.sharedEligibility && item.sharedEligibility.text !== item.eligibility?.text
       ? '</dd><dd>版本共用資格 · ' + cite(item.sharedEligibility) : '') +
     '</dd>' + showPeriod('參加期間', periods.participation) + showPeriod('開領時間', periods.opening) +
     showPeriod('領獎期限', periods.claim) + '</dl>' + sections + imagesFor(item.images) +
-    '<h2>官方公告段落</h2>' + item.sources.map(source => '<article id="' + source.id + '"><small>' +
-      escape(source.scope) + '</small><pre>' + escape(source.text) + '</pre></article>').join('') +
+    '<details class="source-panel" id="sources"><summary>官方公告段落（' + item.sources.length + '）</summary>' +
+    item.sources.map(source => '<article id="' + source.id + '"><small>' +
+      escape(source.scope) + '</small><pre>' + escape(source.text) + '</pre></article>').join('') + '</details>' +
     '<details id="image-library"><summary>官方圖片來源與選圖</summary>' +
     item.images.map((url, i) => {
       const key = imageKey(url);
       const record = imageRecords[key];
       const shop = item.shopImages?.includes(url);
       const selected = record?.selected ?? shop;
-      return '<article id="image-' + key + '"><p><a href="' + escape(url) + '">官方圖片 ' + (i + 1) + '</a> · ' +
-        (record?.version ? '<a href="/images/' + key + '">本機原圖</a>' : '尚未保存本機原圖') + '</p>' +
+      const preview = record?.version ? '/images/' + key : escape(url);
+      return '<article id="image-' + key + '"><p>官方圖片 ' + (i + 1) + ' · ' +
+        (record?.version ? '已保存本機原圖' : '尚未保存本機原圖') + '</p>' +
+        '<details class="image-preview"><summary>預覽圖片</summary><img loading="lazy" src="' + preview +
+        '" alt="' + escape(record?.appearance || '官方圖片 ' + (i + 1)) + '"></details>' +
         (record?.recognition ? '<details><summary>圖片辨識 · 待人工核對</summary><pre>' + escape(record.recognition.text) + '</pre></details>' : '') +
         '<form method="post" action="/activities/' + item.id + '/images/' + key + '#image-' + key + '">' +
         '<button name="action" value="download">保存／重試原圖</button> ' +
@@ -250,13 +307,16 @@ function note(saved, now, query) {
     ? rewards.map(({ name, quantity, level }) =>
       row(fields.reward, level + '（選擇應援時）：' + name + ' ×' + quantity + '／次', notice.table)).join('')
     : fact('reward');
-  return page(activity, '<nav><a href="/?q=' + encodeURIComponent(query ?? notice.reward) + '">← 回搜尋結果</a></nav><h1>' + activity +
+  return page(activity, '<nav><a href="/?q=' + encodeURIComponent(query ?? notice.reward) + '">← 回搜尋結果</a></nav>' +
+    '<span class="event-label">星夜馬戲團 in 墮落城市</span><h1>' + activity +
     '</h1><p>' + time.status + ' · ' + link + '</p><dl>' + fact('eligibility') + row('參加期間', time.text, notice.date?.id) +
     row('領獎期限', notice.claim ? '請查看公告所列領取條件' : '此活動段落未載明獨立領獎期限',
       notice.claim?.id ?? 'sources') + '</dl><article id="method"><h2>' + method +
     '</h2><dl>' + fact('first') + rewardDetails + fact('steps') + fact('limits') +
-    '</dl><a href="#' + notice.table + '">查看應援規則與獎勵表</a></article><h2 id="sources">官方公告段落</h2>' +
-    notice.sources.map(source => '<article id="' + source.id + '"><pre>' + escape(source.text) + '</pre></article>').join(''));
+    '</dl><a href="#' + notice.table + '">查看應援規則與獎勵表</a></article>' +
+    '<details class="source-panel" id="sources"><summary>官方公告段落（' + notice.sources.length + '）</summary>' +
+    notice.sources.map(source => '<article id="' + source.id + '"><pre>' + escape(source.text) + '</pre></article>').join('') +
+    '</details><script src="/image-actions.js" defer></script>');
 }
 
 export function website({ dir = 'data', now = () => new Date(), fetchSource = fetchNotice, summarize = gemini,
