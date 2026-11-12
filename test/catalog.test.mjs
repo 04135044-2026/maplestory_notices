@@ -12,7 +12,8 @@ const activity = (title, size, from, rank, content) => heading(title, size) +
   paragraph('活動日期：' + from + ' ~ 12/1') + paragraph('參加條件：' + rank) + content;
 const chair = activity('三眼章魚直火燒烤', 15, '10/21', '見習者設計師',
   paragraph('向NPC內拉接受任務後即可參加。') +
-  paragraph('累積獲得4萬分或單局獲得1250分，可領取紀念椅子「三眼章魚直火燒烤」。'));
+  paragraph('累積獲得4萬分或單局獲得1250分，可領取紀念椅子「三眼章魚直火燒烤」。') +
+  '<p><img src="https://tw.hicdn.beanfun.com/chair.png"></p>');
 const stress = activity('消除壓力！', 15, '11/4', '老手設計師', paragraph('進入挑戰。'));
 const box = activity('搖滾音樂節幸運箱', 15, '11/11', '菁英設計師',
   paragraph('一天1次，一週最多3次，與NPC權達開對話。') + paragraph('可能獲得的獎勵如下：'));
@@ -78,7 +79,10 @@ test('從活動入口核對取得方法，Gemini 只收到指定方法的適用�
   const snapshot = '19129-test.html';
   await writeFile(join(dir, snapshot), html);
   await writeFile(join(dir, 'summary.json'), JSON.stringify({ snapshot }));
+  let imageCalls = 0;
   const server = website({ dir, now: () => new Date('2026-11-12T20:00:00+08:00'),
+    downloadImage: async () => ({ bytes: Buffer.from('sample-image'), mime: 'image/png', version: 'sample' }),
+    summarizeImage: async () => { imageCalls++; return { text: '原圖不含可辨識文字' }; },
     summarizeActivityMethod: async ({ sources }) => {
       assert.ok(sources.some(source => source.text.includes('內拉')));
       assert.ok(sources.some(source => source.scope === '共用注意事項'));
@@ -106,6 +110,17 @@ test('從活動入口核對取得方法，Gemini 只收到指定方法的適用�
     assert.match(detail, /4萬分或單局獲得1250分/);
     const action = detail.match(/action="(\/activities\/[^"]+)"/)?.[1];
     assert.equal((await fetch(root + action, { method: 'POST', redirect: 'manual' })).status, 303);
+    const imageAction = detail.match(/action="(\/activities\/[^"]+\/images\/[^"#]+)#/)?.[1];
+    assert.ok(imageAction);
+    const select = await fetch(root + imageAction, { method: 'POST', body: new URLSearchParams({ action: 'select' }) });
+    assert.equal(select.status, 200);
+    assert.equal(imageCalls, 0);
+    const rendered = await select.text();
+    const cached = rendered.match(/src="(\/images\/[^"]+)"/)?.[1];
+    assert.equal(await (await fetch(root + cached)).text(), 'sample-image');
+    assert.match(rendered, /物品對應待確認/);
+    assert.equal((await fetch(root + imageAction, { method: 'POST', body: new URLSearchParams({ action: 'recognize' }) })).status, 200);
+    assert.equal(imageCalls, 1);
     const lucky = catalogFromSnapshot(html)[2];
     const luckyDetail = await (await fetch(root + '/activities/' + lucky.id)).text();
     assert.match(luckyDetail, /2026\/11\/11/);

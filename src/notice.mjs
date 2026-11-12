@@ -94,7 +94,7 @@ export async function gemini({ sources, evidence }) {
   );
 }
 
-export async function generateSummary(instruction, input, properties) {
+export async function generateSummary(instruction, input, properties, media = []) {
   const { GEMINI_API_KEY: key, GEMINI_MODEL: model } = process.env;
   if (!key || !/^[\w.-]+$/.test(model ?? '')) throw new Problem('請先設定免費 Gemini 專案的金鑰及模型。');
   let response;
@@ -104,7 +104,7 @@ export async function generateSummary(instruction, input, properties) {
       headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key },
       body: JSON.stringify({
         systemInstruction: { parts: [{ text: instruction }] },
-        contents: [{ parts: [{ text: JSON.stringify(input) }] }],
+        contents: [{ parts: [{ text: JSON.stringify(input) }, ...media] }],
         generationConfig: { responseMimeType: 'application/json', responseJsonSchema: {
           type: 'object', properties, required: Object.keys(properties),
         } },
