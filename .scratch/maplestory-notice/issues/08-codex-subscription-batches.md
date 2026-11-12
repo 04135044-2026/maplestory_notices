@@ -6,7 +6,7 @@
 
 **Status:** ready-for-agent
 
-**Completion:** pending
+**Completion:** done
 
 **Specification:** [正式規格 v1.2](../../../SPEC.md)；US-031、US-032、US-033；D7、D12、D13、D14；AC13、AC14、AC23。
 
@@ -28,3 +28,5 @@
 完成時記錄使用的來源案例、實際操作／驗證結果及尚存限制。涉及真實模型呼叫時，記錄可取得用量；未知量明示未知。前置任務未完成時保持等待，不以 ready-for-agent 標記取代依賴檢查。
 
 ## Comments
+
+以本機 CLI 的 ChatGPT 訂閱登入，在隔離資料目錄走網站批次入口。三眼章魚直火燒烤的指定段落與已選原圖成功產生可查閱的結構化摘要，保留兩個擇一分數門檻。CLI 回報輸入 13,593、輸出 329 tokens，剩餘額度未知。批次完成後，長期預設仍為 Gemini。

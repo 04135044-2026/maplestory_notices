@@ -6,6 +6,7 @@ import { catalogFromSnapshot, methodContext, methodFacts, methodFields, summariz
 import { manualActivity, mergeManual, reviewDocument } from './review.mjs';
 import { fetchOfficialImage, imageKey, recognizeImage } from './images.mjs';
 import { fingerprint, methodFingerprint } from './incremental.mjs';
+import { CODEX_MODEL, createCodexGenerator } from './codex.mjs';
 import { activityState, periodText, timeline } from './periods.mjs';
 import { rewardTypes, searchCatalog, statuses } from './search.mjs';
 
@@ -259,7 +260,7 @@ function activityNav(backHref, backText, title) {
     '<a class="official-button" href="' + escape(official + '#:~:text=' + fragment) + '" target="_blank" rel="noopener noreferrer">官方公告 ↗</a></nav>';
 }
 
-function activityDetail(item, now, summaries = {}, status = '', imageRecords = {}) {
+function activityDetail(item, now, summaries = {}, status = '', imageRecords = {}, provider = 'gemini') {
   const periods = timeline(item);
   const showPeriod = (label, period) => '<dt>' + label + '</dt><dd>' + escape(periodText(period)) +
     (period.source ? evidenceLink(period.source) : '') + '</dd>';
@@ -315,10 +316,10 @@ function activityDetail(item, now, summaries = {}, status = '', imageRecords = {
       facts('機率', chances.filter(source => /機率/.test(source.text))) +
       '</dl>' + originalFlow(methodContext(item, method)
         .filter(source => method.sourceIds.includes(source.id) || item.local.includes(source)), ownImages,
-        '公告表格與圖片') + '<details><summary>Gemini 整理</summary>' +
+        '公告表格與圖片') + '<details><summary>摘要整理</summary>' +
       (summaries[method.id] ? '<dl>' + Object.entries(methodFields).map(([key, label]) =>
         facts(label, summaries[method.id].facts[key].map(fact => ({ text: fact.text, id: fact.source })))).join('') + '</dl>' : '<p>尚未整理這個方法。</p>') +
-      '<form method="post" action="/activities/' + item.id + '/' + method.id + '"><button>用 Gemini 整理這個方法</button></form></details></article>';
+      '<form method="post" action="/activities/' + item.id + '/' + method.id + '"><button>用預設模型整理這個方法</button></form></details></article>';
   }).join('');
   const shared = originalFlow(item.sources, item.images, '活動共用表格與圖片');
   return page(item.title, activityNav('/activities', '← 全部活動', item.title) + eventLabel(item) + '<h1>' + escape(item.title) + '</h1><p>' +
@@ -328,7 +329,11 @@ function activityDetail(item, now, summaries = {}, status = '', imageRecords = {
       ? '</dd><dd>版本共用資格 · ' + cite(item.sharedEligibility) : '') +
     '</dd>' + showPeriod('參加期間', periods.participation) + showPeriod('開領時間', periods.opening) +
     showPeriod('領獎期限', periods.claim) + '</dl>' +
-    shared + sections +
+    shared + sections + '<details><summary>用訂閱 Codex 整理本批</summary><p>目前預設：' +
+    (provider === 'codex' ? '訂閱 Codex' : 'Gemini') + '</p><form method="post" action="/activities/' + item.id + '/batch">' +
+    item.methods.filter(target => target.kind === 'method').map(target => '<label><input type="checkbox" name="method" value="' +
+      target.id + '">' + escape(target.title) + '</label> ').join('') +
+    '<button>用訂閱 Codex 整理勾選方法</button></form></details>' +
     '<details id="image-library"><summary>官方圖片來源與選圖</summary>' +
     item.images.map((url, i) => {
       const key = imageKey(url);
@@ -374,7 +379,8 @@ function note(saved, now, query) {
 }
 
 export function website({ dir = 'data', now = () => new Date(), fetchSource = fetchNotice, summarize = gemini,
-  summarizeActivityMethod = summarizeMethod, downloadImage = fetchOfficialImage, summarizeImage = recognizeImage } = {}) {
+  summarizeActivityMethod = summarizeMethod, downloadImage = fetchOfficialImage, summarizeImage = recognizeImage,
+  codexGenerate = createCodexGenerator() } = {}) {
   let importing = false;
   let catalogCache;
   async function readSaved(name = 'summary.json') {
@@ -457,6 +463,7 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
         if (req.method !== 'GET') throw new Problem('操作不支援。', 405);
         const latest = await readSaved('source-update.json');
         const records = await readSaved('official-images.json') ?? {};
+        const provider = (await readSaved('model-preferences.json'))?.provider ?? 'gemini';
         const savedMethods = (await readSaved('activity-methods.json'))?.methods ?? {};
         let body = '';
         if (source) {
@@ -464,7 +471,8 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
             const items = mergeManual(await readCatalog(source), await confirmedItems(source));
             body = items.flatMap(item => item.methods.filter(target => target.kind === 'method').map(target => {
               const previous = savedMethods[target.id];
-              const state = !previous ? '尚未整理' : previous.inputKey === methodFingerprint(item, target, records) ? '摘要已是最新' : '摘要待重整 · 舊摘要仍可讀';
+              const state = !previous ? '尚未整理' : previous.inputKey === methodFingerprint(item, target, records,
+                provider, provider === 'codex' ? CODEX_MODEL : process.env.GEMINI_MODEL) ? '摘要已是最新' : '摘要待重整 · 舊摘要仍可讀';
               return '<li><a href="/activities/' + item.id + '#' + target.id + '">' + escape(item.title + ' › ' + target.title) +
                 '</a> · ' + state + (previous?.at ? ' · 摘要完成 ' + escape(previous.at) : '') +
                 (state === '摘要已是最新' ? '' : '<form method="post" action="/activities/' + item.id + '/' + target.id + '"><button>整理這個方法</button></form>') + '</li>';
@@ -475,7 +483,19 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
           '<p>來源取得 ' + escape(source?.checkedAt ?? source?.capturedAt ?? '尚未記錄') + '</p>' +
           (latest ? '<p>' + (latest.changed ? '來源已更新' : '公告文字未變') + ' · 已變更圖片 ' + latest.images +
             ' 張 · 無法查驗圖片 ' + latest.failed + ' 張</p>' : '') +
-          '<form method="post"><button>重新取得官方來源</button></form><ul>' + body + '</ul>'));
+          '<form method="post"><button>重新取得官方來源</button></form>' +
+          '<form method="post" action="/model-preferences"><label>摘要預設模型 <select name="provider">' +
+          '<option value="gemini"' + (provider === 'gemini' ? ' selected' : '') + '>Gemini</option>' +
+          '<option value="codex"' + (provider === 'codex' ? ' selected' : '') + '>訂閱 Codex</option></select></label> ' +
+          '<button>保存長期預設</button></form><ul>' + body + '</ul>'));
+      }
+      if (req.method === 'POST' && url.pathname === '/model-preferences') {
+        if (importing) throw new Problem('公告正在處理中。', 409);
+        importing = methodLocked = true;
+        const provider = (await formData(req)).get('provider');
+        if (!['gemini', 'codex'].includes(provider)) throw new Problem('請選擇可用的模型。');
+        await save('model-preferences.json', JSON.stringify({ provider }));
+        return res.writeHead(303, { Location: '/updates' }).end();
       }
       if (req.method === 'POST' && url.pathname === '/import') {
         if (importing) throw new Problem('公告正在整理中。', 409);
@@ -657,25 +677,42 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
         if (!item || extra !== undefined) throw new Problem('找不到活動。', 404);
         const savedMethods = await readSaved('activity-methods.json');
         const summaries = savedMethods?.methods ?? {};
-        if (req.method === 'GET' && !methodId) return respond(200, activityDetail(item, now(), summaries, pending, imageRecords));
+        const preferred = (await readSaved('model-preferences.json'))?.provider ?? 'gemini';
+        if (req.method === 'GET' && !methodId) return respond(200, activityDetail(item, now(), summaries, pending, imageRecords, preferred));
         const target = item.methods.find(method => method.id === methodId && method.kind === 'method');
-        if (req.method === 'POST' && target) {
-            const inputKey = methodFingerprint(item, target, imageRecords);
-            if (summaries[target.id]?.inputKey === inputKey) {
-              return res.writeHead(303, { Location: '/activities/' + item.id + '#' + target.id }).end();
-            }
+        if (req.method === 'POST' && (target || methodId === 'batch')) {
+          const batch = methodId === 'batch';
+          const provider = batch ? 'codex' : preferred;
+          const ids = batch ? [...new Set((await formData(req)).getAll('method'))] : [target.id];
+          const targets = item.methods.filter(entry => entry.kind === 'method' && ids.includes(entry.id));
+          if (!targets.length || targets.length !== ids.length) throw new Problem('請選擇本活動的取得方法。');
+          for (const target of targets) {
+            const inputKey = methodFingerprint(item, target, imageRecords, provider, provider === 'codex' ? CODEX_MODEL : process.env.GEMINI_MODEL);
+            if (summaries[target.id]?.inputKey === inputKey) continue;
             const sources = methodContext(item, target);
-            const generated = await summarizeActivityMethod({ title: item.title, method: target.title, sources });
+            const input = { title: item.title, method: target.title, sources };
+            const generated = provider === 'codex' ? await summarizeMethod(input, async (instruction, input, properties) => {
+              const parts = [{ text: JSON.stringify(input) }];
+              for (const imageUrl of new Set([...target.images, ...(item.sharedImages ?? [])])) {
+                const record = imageRecords[imageKey(imageUrl)];
+                if (!record?.selected || !record.version || item.shopImages?.includes(imageUrl)) continue;
+                const bytes = await readFile(join(dir, 'image-' + record.version));
+                parts.push({ inlineData: { mimeType: record.mime, data: bytes.toString('base64') } });
+              }
+              const output = await codexGenerate({ parts, instruction,
+                schema: { type: 'object', properties, required: Object.keys(properties) } });
+              return { result: output.result, metadata: { model: output.model, usage: output.usage, provider } };
+            }) : await summarizeActivityMethod(input);
             const known = methodFacts(item, target);
             const facts = validateMethod(generated.result, sources, {
               eligibility: item.eligibility ? [item.eligibility.id] : [],
               steps: known.steps ? [known.steps.id] : [],
               rewards: known.rewards.map(source => source.id),
             });
-            const updated = { ...summaries, [target.id]: { facts, inputKey, model: generated.metadata, at: now().toISOString() } };
-            await save('activity-methods.json', JSON.stringify({ snapshot: saved.snapshot, methods: updated }, null, 2));
-            res.writeHead(303, { Location: '/activities/' + item.id + '#' + target.id }).end();
-            return;
+            summaries[target.id] = { facts, inputKey, model: generated.metadata, at: now().toISOString() };
+            await save('activity-methods.json', JSON.stringify({ snapshot: saved.snapshot, methods: summaries }, null, 2));
+          }
+          return res.writeHead(303, { Location: '/activities/' + item.id + '#' + targets[0].id }).end();
         }
       }
       if (req.method !== 'GET') throw new Problem('操作不支援。', 405);
