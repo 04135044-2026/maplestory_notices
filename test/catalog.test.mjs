@@ -169,7 +169,9 @@ test('從活動入口核對取得方法，Gemini 只收到指定方法的適用�
     assert.equal(await (await fetch(root + cached)).text(), 'sample-image');
     assert.match(rendered, /物品對應待確認/);
     const original = rendered.match(/<details data-source-flow open>[\s\S]*?<\/details>/)?.[0];
-    assert.match(original, /1250分[\s\S]*?<figure>[\s\S]*?<table>/);
+    assert.match(original, /<figure>[\s\S]*?<table>/);
+    assert.doesNotMatch(original, /1250分|見習者設計師|活動日期/);
+    assert.equal((rendered.split('<summary>Gemini 整理</summary>')[0].match(/累積獲得4萬分或單局獲得1250分/g) ?? []).length, 1);
     assert.match(original, /<th colspan="2">效果表<\/th>/);
     assert.match(original, /<td rowspan="2">重置卷<\/td><td>一階\n加成<\/td>/);
     assert.doesNotMatch(rendered, /預覽對應原圖|<dt>重置規則<\/dt>/);
