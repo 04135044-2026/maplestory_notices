@@ -14,7 +14,8 @@ const activity = (title, size, from, rank, content) => heading(title, size) +
 const chair = activity('三眼章魚直火燒烤', 15, '10/21', '見習者設計師',
   paragraph('向NPC內拉接受任務後即可參加。') +
   paragraph('累積獲得4萬分或單局獲得1250分，可領取紀念椅子「三眼章魚直火燒烤」。') +
-  '<p><img src="https://tw.hicdn.beanfun.com/chair.png"></p>');
+  '<p><img src="https://tw.hicdn.beanfun.com/chair.png"></p>' +
+  '<table><tr><th colspan="2">效果表</th></tr><tr><td rowspan="2">重置卷</td><td>一階<br>加成</td></tr><tr><td>二階</td></tr></table>');
 const stress = activity('消除壓力！', 15, '11/4', '老手設計師', paragraph('進入挑戰。'));
 const box = activity('搖滾音樂節幸運箱', 15, '11/11', '菁英設計師',
   paragraph('一天1次，一週最多3次，與NPC權達開對話。') + paragraph('可能獲得的獎勵如下：'));
@@ -167,6 +168,11 @@ test('從活動入口核對取得方法，Gemini 只收到指定方法的適用�
     const cached = rendered.match(/src="(\/images\/[^"]+)"/)?.[1];
     assert.equal(await (await fetch(root + cached)).text(), 'sample-image');
     assert.match(rendered, /物品對應待確認/);
+    const original = rendered.match(/<details data-source-flow open>[\s\S]*?<\/details>/)?.[0];
+    assert.match(original, /1250分[\s\S]*?<figure>[\s\S]*?<table>/);
+    assert.match(original, /<th colspan="2">效果表<\/th>/);
+    assert.match(original, /<td rowspan="2">重置卷<\/td><td>一階\n加成<\/td>/);
+    assert.doesNotMatch(rendered, /預覽對應原圖|<dt>重置規則<\/dt>/);
     assert.equal((await fetch(root + imageAction, { method: 'POST', body: new URLSearchParams({ action: 'recognize' }) })).status, 200);
     assert.equal(imageCalls, 1);
     const lucky = catalogFromSnapshot(html)[2];

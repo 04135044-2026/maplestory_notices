@@ -28,6 +28,10 @@ summary{cursor:pointer;font-weight:700}
 .image-preview{border:0;padding:0;margin:.5rem 0;background:transparent}
 .image-preview img{display:block;max-width:100%;width:auto;height:auto;max-height:min(65vh,30rem);object-fit:contain;margin:.6rem 0}
 .source-panel article:target{border-color:#17563d;outline:2px solid #17563d}
+.source-table{overflow-x:auto;margin:.5rem 0}
+.source-table table{border-collapse:collapse;width:100%;font-size:.95rem}
+.source-table td,.source-table th{border:1px solid #bccbc1;padding:.45rem .6rem;vertical-align:top;white-space:pre-line;min-width:6em}
+.source-table th,.source-table tr:first-child{background:#edf3ee}
 `;
 const page = (title, body) => '<!doctype html><html lang="zh-Hant"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>' + escape(title) + '</title><style>' + style + layout + '</style><main>' + body + '</main></html>';
 const imageActions = `
@@ -72,7 +76,11 @@ document.addEventListener('submit', async event => {
     const newSlot = documentAfter.getElementById(slotId);
     const previousTop = button.getBoundingClientRect().top;
     const wasPreviewing = card.querySelector('.image-preview')?.open;
-    if (slot && newSlot) slot.replaceChildren(...newSlot.childNodes);
+    if (slot && newSlot) {
+      slot.replaceChildren(...newSlot.childNodes);
+      const original = slot.closest('details[data-source-flow]');
+      if (original && slot.firstElementChild) original.open = true;
+    }
     card.replaceChildren(...newCard.childNodes);
     if (wasPreviewing && card.querySelector('.image-preview')) card.querySelector('.image-preview').open = true;
     const next = [...card.querySelectorAll('button')].find(entry => entry.value === button.value ||
@@ -223,40 +231,46 @@ function activityList(activities, query, now, pending = '') {
     }) : '<p>查無符合的活動。</p>'));
 }
 
+function sourceBody(source) {
+  const rows = source.cells ?? source.rows?.map(row => row.map(text => ({ text })));
+  if (!rows?.length) return '<pre>' + escape(source.text) + '</pre>';
+  const span = (name, value) => Number.isInteger(value) && value > 1 && value < 1000 ? ' ' + name + '="' + value + '"' : '';
+  return '<div class="source-table" tabindex="0" role="region" aria-label="官方公告表格"><table><tbody>' +
+    rows.map(row => '<tr>' + row.map(cell => {
+      const tag = cell.heading ? 'th' : 'td';
+      return '<' + tag + span('colspan', cell.colspan) + span('rowspan', cell.rowspan) + '>' + escape(cell.text) + '</' + tag + '>';
+    }).join('') + '</tr>').join('') + '</tbody></table></div>';
+}
+
 function activityDetail(item, now, summaries = {}, status = '', imageRecords = {}) {
   const periods = timeline(item);
   const showPeriod = (label, period) => '<dt>' + label + '</dt><dd>' + escape(periodText(period)) +
     (period.source ? ' <a href="#' + period.source.id + '">查看依據</a>' : '') + '</dd>';
-  const cite = source => source ? escape(source.text) + ' <a href="#' + source.id + '">查看依據</a>' : '未載明／待確認';
-  const facts = (label, sources, allowedImages = []) => '<dt>' + label + '</dt>' +
-    (sources.length ? sources.map(source => '<dd>' + cite(source) +
-      imagesFor((source.images ?? []).filter(url => allowedImages.includes(url))) + '</dd>').join('') : '<dd>未載明／待確認</dd>');
+  const cite = source => source ? (source.rows ? sourceBody(source) : escape(source.text)) + ' <a href="#' + source.id + '">查看依據</a>' : '未載明／待確認';
+  const facts = (label, sources) => '<dt>' + label + '</dt>' +
+    (sources.length ? sources.map(source => '<dd>' + cite(source) + '</dd>').join('') : '<dd>未載明／待確認</dd>');
   const placed = new Set();
-  const linkedImages = new Set();
-  const imageSource = (url, source) => {
-    if (linkedImages.has(url)) return '';
-    linkedImages.add(url);
-    const key = imageKey(url);
-    const text = source?.text.split('\n')[0].replace(/^🎸\s*/u, '').trim() || item.title;
-    const fragment = encodeURIComponent(text.slice(0, 85)).replaceAll('-', '%2D');
-    return '<div id="source-image-' + key + '"><details class="image-preview"><summary>預覽對應原圖</summary>' +
-      '<img loading="lazy" src="' + (imageRecords[key]?.version ? '/images/' + key : escape(url)) + '" alt="對應的官方原圖"></details>' +
-      '<p><a href="' + official + '#:~:text=' + fragment + '" target="_blank" rel="noopener noreferrer">到官方公告查看圖片附近原文 ↗</a></p></div>';
-  };
-  const imagesFor = urls => urls.filter(url => !placed.has(url)).map(url => {
+  const isSelected = url => imageRecords[imageKey(url)]?.selected ?? item.shopImages?.includes(url);
+  const imagesFor = urls => [...new Set(urls)].filter(url => !placed.has(url)).map(url => {
     placed.add(url);
     const key = imageKey(url);
     const record = imageRecords[key];
-    const figure = !(record?.selected ?? item.shopImages?.includes(url)) ? '' : '<figure><img loading="lazy" style="max-width:100%" src="' +
+    const figure = !isSelected(url) ? '' : '<figure><img loading="lazy" style="max-width:100%" src="' +
       (record?.version ? '/images/' + key : escape(url)) + '" alt="' + escape(record?.appearance || '官方原圖') + '">' +
-      '<figcaption>' + escape(record?.appearance || '官方原圖 · 物品對應待確認') +
-      ' · <a href="#source-image-' + key + '">查看圖片的公告位置</a></figcaption></figure>';
+      '<figcaption>' + escape(record?.appearance || '官方原圖 · 物品對應待確認') + '</figcaption></figure>';
     return '<div id="slot-image-' + key + '">' + figure + '</div>';
   }).join('');
+  const originalFlow = (sources, urls, title) => {
+    const allowed = new Set(urls.filter(url => !placed.has(url)));
+    const at = images => imagesFor((images ?? []).filter(url => allowed.has(url)));
+    const body = sources.map(source => at(source.beforeImages) + sourceBody(source) + at(source.images)).join('');
+    return '<details data-source-flow' + ([...allowed].some(isSelected) ? ' open' : '') + '><summary>' +
+      title + '</summary>' + body + imagesFor([...allowed]) + '</details>';
+  };
   const sections = item.methods.map(method => {
-    if (method.kind === 'reference') return '<details><summary>補充說明 · ' + escape(method.title) +
-      '</summary>' + methodContext(item, method).filter(source => method.sourceIds.includes(source.id))
-        .map(source => '<p>' + cite(source) + '</p>').join('') + '</details>';
+    if (method.kind === 'reference') return originalFlow(
+      methodContext(item, method).filter(source => method.sourceIds.includes(source.id)), method.images,
+      '補充說明 · ' + escape(method.title));
     const { steps, rewards, costs, chances, limits } = methodFacts(item, method);
     const rewardLabel = chances.some(source => source.text.includes('可能獲得')) ? '可能獎勵' : '獎勵';
     const shortRewards = rewards.filter(source => !source.text.includes('\n'));
@@ -269,16 +283,15 @@ function activityDetail(item, now, summaries = {}, status = '', imageRecords = {
       (ownPeriods.length ? '<dt>方法狀態</dt><dd>' + activityState(methodPeriods, now) + '</dd>' : '') +
       ownPeriods.map(([label, key]) => showPeriod(label, methodPeriods[key])).join('') +
       (methodPeriods.resets.length ? facts('重置規則', methodPeriods.resets) : '') +
-      facts('第一步', steps ? [steps] : [], ownImages) + facts(rewardLabel, shortRewards, ownImages) + facts('重要限制', limits, ownImages) +
+      facts('第一步', steps ? [steps] : []) + facts(rewardLabel, shortRewards) + facts('重要限制', limits) +
       facts('成本及付費條件', costs) +
       facts('機率', chances.filter(source => /機率/.test(source.text))) +
-      '</dl>' + imagesFor(ownImages) + '<details><summary>Gemini 整理</summary>' +
+      '</dl>' + originalFlow(methodContext(item, method)
+        .filter(source => method.sourceIds.includes(source.id) || item.local.includes(source)), ownImages,
+        '查看方法原文及表格') + '<details><summary>Gemini 整理</summary>' +
       (summaries[method.id] ? '<dl>' + Object.entries(methodFields).map(([key, label]) =>
         facts(label, summaries[method.id].facts[key].map(fact => ({ text: fact.text, id: fact.source })))).join('') + '</dl>' : '<p>尚未整理這個方法。</p>') +
-      '<form method="post" action="/activities/' + item.id + '/' + method.id + '"><button>用 Gemini 整理這個方法</button></form></details>' +
-      '<details><summary>查看方法原文及表格</summary>' +
-      methodContext(item, method).filter(source => method.sourceIds.includes(source.id) || item.local.includes(source))
-        .map(source => '<pre>' + cite(source) + '</pre>').join('') + '</details></article>';
+      '<form method="post" action="/activities/' + item.id + '/' + method.id + '"><button>用 Gemini 整理這個方法</button></form></details></article>';
   }).join('');
   return page(item.title, '<nav><a href="/activities">← 全部活動</a></nav>' + eventLabel(item) + '<h1>' + escape(item.title) + '</h1><p>' +
     activityState(periods, now) + ' · ' + link + '</p>' + (status ? '<p role="status">' + escape(status) + '</p>' : '') +
@@ -286,12 +299,12 @@ function activityDetail(item, now, summaries = {}, status = '', imageRecords = {
     (item.sharedEligibility && item.sharedEligibility.text !== item.eligibility?.text
       ? '</dd><dd>版本共用資格 · ' + cite(item.sharedEligibility) : '') +
     '</dd>' + showPeriod('參加期間', periods.participation) + showPeriod('開領時間', periods.opening) +
-    showPeriod('領獎期限', periods.claim) + '</dl>' + sections + imagesFor(item.images) +
+    showPeriod('領獎期限', periods.claim) + '</dl>' +
+    (item.images.some(url => !placed.has(url)) ? originalFlow(item.sources.filter(source =>
+      [...(source.beforeImages ?? []), ...(source.images ?? [])].some(url => !placed.has(url))), item.images, '活動共用原文及圖片') : '') + sections +
     '<details class="source-panel" id="sources"><summary>官方公告段落（' + item.sources.length + '）</summary>' +
     item.sources.map(source => '<article id="' + source.id + '"><small>' +
-      escape(source.scope) + '</small><pre>' + escape(source.text) + '</pre>' +
-      (source.images ?? []).filter(url => item.images.includes(url)).map(url => imageSource(url, source)).join('') + '</article>').join('') +
-    item.images.map(url => imageSource(url)).join('') + '</details>' +
+      escape(source.scope) + '</small>' + sourceBody(source) + '</article>').join('') + '</details>' +
     '<details id="image-library"><summary>官方圖片來源與選圖</summary>' +
     item.images.map((url, i) => {
       const key = imageKey(url);
@@ -332,7 +345,7 @@ function note(saved, now, query) {
     '</h2><dl>' + fact('first') + rewardDetails + fact('steps') + fact('limits') +
     '</dl><a href="#' + notice.table + '">查看應援規則與獎勵表</a></article>' +
     '<details class="source-panel" id="sources"><summary>官方公告段落（' + notice.sources.length + '）</summary>' +
-    notice.sources.map(source => '<article id="' + source.id + '"><pre>' + escape(source.text) + '</pre></article>').join('') +
+    notice.sources.map(source => '<article id="' + source.id + '">' + sourceBody(source) + '</article>').join('') +
     '</details><script src="/image-actions.js" defer></script>');
 }
 
