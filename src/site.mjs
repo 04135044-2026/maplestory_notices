@@ -8,8 +8,8 @@ import { fetchOfficialImage, imageKey, recognizeImage } from './images.mjs';
 import { fingerprint, methodFingerprint, sourceReferences, summaryForDisplay } from './incremental.mjs';
 import { CODEX_MODEL, createCodexGenerator } from './codex.mjs';
 import { fetchCorrection, officialCorrectionUrl, verifiedSource, withCorrections } from './corrections.mjs';
-import { activityState, periodText, timeline } from './periods.mjs';
-import { rewardTypes, searchCatalog, statuses } from './search.mjs';
+import { activityState, periodText, timeline, versionPeriod } from './periods.mjs';
+import { activityRewards, rewardTypes, searchCatalog, statuses } from './search.mjs';
 import { watchKey, watchVersion } from './watch.mjs';
 import { editChanged, editEvidence, editKey } from './manual-edits.mjs';
 import { calendarActivity, calendarMonth, exportCalendar } from './calendar.mjs';
@@ -27,10 +27,10 @@ const layout = `
 main:has(.activity-grid){max-width:72rem}
 summary{cursor:pointer;font-weight:700}
 .activity-family{--accent:#32664d;border-top:3px solid var(--accent);margin:1.5rem 0 2rem;padding-top:.65rem}
-.activity-family[data-tone="1"]{--accent:#485993}
-.activity-family[data-tone="2"]{--accent:#93532c}
-.activity-family[data-tone="3"]{--accent:#765086}
-.activity-family[data-tone="4"]{--accent:#32646f}
+[data-tone="1"]{--accent:#485993}
+[data-tone="2"]{--accent:#93532c}
+[data-tone="3"]{--accent:#765086}
+[data-tone="4"]{--accent:#32646f}
 .activity-family>h2{color:var(--accent);margin:.25rem 0 .8rem;font-size:1.3rem}
 .activity-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,16rem),1fr));gap:.8rem}
 .activity-grid>article{margin:0;padding:.85rem;border-top:3px solid var(--accent);min-width:0}
@@ -61,12 +61,28 @@ main :target{scroll-margin-top:4rem}
 .site-tabs a:hover,.site-tabs a:focus-visible{text-decoration:underline}
 .site-tabs a[aria-current=page]{background:#e0ede4;font-weight:700}
 .calendar-scroll{overflow-x:auto}
-.calendar-grid{width:100%;min-width:44rem;table-layout:fixed;border-collapse:collapse}
-.calendar-grid td,.calendar-grid th{border:1px solid #cddbd3;padding:.35rem;vertical-align:top}
-.calendar-grid td{height:3rem;background:white;overflow-wrap:anywhere}
-.calendar-grid ul{margin:.25rem 0;padding:0;list-style:none;font-size:.82rem}
-.calendar-grid li{padding:.18rem 0;border-top:1px solid #dce4de}
-.calendar-grid small{display:block}
+main:has(.calendar-layout){max-width:82rem}
+.calendar-layout{display:grid;grid-template-columns:minmax(0,1fr) minmax(14rem,22rem);gap:1rem;align-items:start}
+.calendar-filters{display:flex;flex-wrap:wrap;gap:.75rem;align-items:center;margin-bottom:1rem}
+.calendar-grid{min-width:36rem;border:1px solid #cddbd3}
+.calendar-week{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));position:relative}
+.calendar-weekday{text-align:center;padding:.35rem;background:#e5ece1}
+.calendar-cell{position:relative;grid-row:1/-1;background:#fffdf8;border:1px solid #dce4de}
+.calendar-cell-empty{background:#eceee8}
+.calendar-day,.calendar-counts{z-index:1;padding:.3rem;min-width:0}
+.calendar-day{position:relative;grid-row:1;min-height:1.8rem}
+.calendar-day a{text-decoration:none}
+.calendar-cell-selected{background:#edf3e9}
+.calendar-counts{min-height:2rem}
+.calendar-count{display:block;width:fit-content;margin:.15rem 0;padding:.1rem .3rem;border-radius:.3rem;font-size:.75rem;color:#204c63;background:#e1edf3}
+.calendar-count-end{background:#f2e7dc;color:#754623}
+.calendar-band{z-index:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding:.13rem .45rem;margin:.12rem .18rem;border-radius:.45rem;font-size:.78rem;font-weight:600;color:var(--accent,#32664d);background:color-mix(in srgb,var(--accent,#32664d) 21%,white)}
+.calendar-details{padding:1rem;border:1px solid #cddbd3;border-radius:.7rem;background:#fffdf8}
+.calendar-details h2{margin-top:0}
+@media(max-width:850px){.calendar-layout{grid-template-columns:minmax(0,1fr)}.calendar-details{grid-row:1}}
+.calendar-today::after{content:"";position:absolute;z-index:2;inset:1px;border:3px solid #14532d;border-radius:.55rem;pointer-events:none}
+.calendar-day:has(.calendar-today-label){z-index:3}
+.calendar-today-label{position:absolute;top:0;left:50%;transform:translate(-50%,-40%);padding:0 .5rem;border-radius:1rem;background:#14532d;color:white;font-size:.78rem;font-weight:700;white-space:nowrap;pointer-events:none}
 `;
 const page = (title, body) => '<!doctype html><html lang="zh-Hant"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>' + escape(title) + '</title><style>' + style + layout + '</style><main>' + body + '</main></html>';
 const imageActions = `
@@ -188,6 +204,7 @@ function filterOptions(name, values, value, label) {
 }
 
 const familyTitle = item => item.pageTitle?.trim() || '未分組活動';
+const familyTone = title => [...title].reduce((total, char) => (total * 31 + char.codePointAt(0)) % 5, 0);
 const familyLabel = item => item.groupTitle ? familyTitle(item) + ' › ' + item.groupTitle : familyTitle(item);
 const eventLabel = item => '<span class="event-label">' + escape(familyLabel(item)) + '</span>';
 
@@ -199,7 +216,7 @@ function activityGroups(entries, itemOf, render) {
     groups.get(title).push(entry);
   }
   return [...groups].map(([title, cards]) => {
-    const tone = [...title].reduce((total, char) => (total * 31 + char.codePointAt(0)) % 5, 0);
+    const tone = familyTone(title);
     return '<section class="activity-family" data-tone="' + tone + '"><h2>' + escape(title) +
       '</h2><div class="activity-grid">' + cards.map(render).join('') + '</div></section>';
   }).join('');
@@ -243,12 +260,20 @@ function primaryTabs(active) {
 
 const managementBack = '<a href="/manage">← 上一頁</a>';
 
-function calendarPage(activities, month, message, selected = []) {
+function calendarPage(activities, all, month, today, filters, message, selected = []) {
   const date = new Date(month + '-01T00:00:00Z');
   const nearby = offset => {
     const shifted = new Date(date);
     shifted.setUTCMonth(shifted.getUTCMonth() + offset);
     return shifted.toISOString().slice(0, 7);
+  };
+  const href = (nextMonth, options = {}) => {
+    const params = new URLSearchParams({ month: nextMonth });
+    if (filters.watched) params.set('watched', '1');
+    if (filters.family) params.set('family', filters.family);
+    if (options.expanded ?? filters.expanded) params.set('expanded', '1');
+    if (options.day) params.set('day', options.day);
+    return '/calendar?' + escape(params.toString()) + (options.day ? '#calendar-date-details' : '');
   };
   const events = new Map();
   for (const { item, dates } of activities) {
@@ -258,11 +283,69 @@ function calendarPage(activities, month, message, selected = []) {
       events.get(day).push({ item, ...entry });
     }
   }
-  const cells = calendarMonth(month).map(week => '<tr>' + week.map(day => day
-    ? '<td><time datetime="' + day + '">' + Number(day.slice(-2)) + '</time><ul>' +
-      (events.get(day) ?? []).map(({ item, label, method }) => '<li><small>' + label + ' · ' + escape(familyTitle(item)) +
-        '</small><a href="/activities/' + item.id + (method ? '#' + method.id : '') + '">' +
-        escape(item.title + (method ? ' › ' + method.title : '')) + '</a></li>').join('') + '</ul></td>' : '<td></td>').join('') + '</tr>').join('');
+  const families = [...new Set(all.map(({ item }) => familyTitle(item)))];
+  const visibleFamilies = new Set(activities.map(({ item }) => familyTitle(item)));
+  const ranges = families.flatMap(title => {
+    if (!visibleFamilies.has(title)) return [];
+    const members = all.filter(({ item }) => familyTitle(item) === title);
+    const official = members.map(({ item }) => versionPeriod(item)).find(period => period.start && period.end &&
+      period.start.date !== '1900-01-01' && period.end.date !== '2100-12-31');
+    if (official) return [{ title, start: official.start.date, end: official.end.date }];
+    const confirmed = members.flatMap(({ dates }) => {
+      const start = dates.find(entry => entry.kind === 'start' && !entry.method)?.point?.date;
+      const end = dates.find(entry => entry.kind === 'end' && !entry.method)?.point?.date;
+      return start && end ? [{ start, end }] : [];
+    });
+    return confirmed.length ? [{ title, start: confirmed.map(period => period.start).sort()[0],
+      end: confirmed.map(period => period.end).sort().at(-1), inferred: true }] : [];
+  });
+  const weeks = calendarMonth(month);
+  const selectedDay = weeks.flat().includes(filters.day) ? filters.day : '';
+  const cells = weeks.map(week => {
+    const first = week.find(Boolean);
+    const last = week.findLast(Boolean);
+    const bands = ranges.filter(range => range.start <= last && range.end >= first);
+    const shown = filters.expanded ? bands : bands.slice(0, 3);
+    const grid = (column, row, span = 1) => ' style="grid-column:' + column + '/span ' + span + ';grid-row:' + row + '"';
+    const countRow = shown.length + 2;
+    const backgrounds = week.map((day, index) => '<div aria-hidden="true" class="calendar-cell' +
+      (!day ? ' calendar-cell-empty' : '') + (day === today ? ' calendar-today' : '') +
+      (day && day === selectedDay ? ' calendar-cell-selected' : '') + '"' + grid(index + 1, '1/' + (countRow + 1)) + '></div>').join('');
+    const dates = week.map((day, index) => day ? '<div class="calendar-day"' + grid(index + 1, 1) + '>' +
+      (day === today ? '<span class="calendar-today-label" aria-hidden="true">今天</span>' : '') +
+      '<a href="' + href(month, { day }) + '" aria-label="' + day + ' 活動清單"' +
+      (day === selectedDay ? ' aria-controls="calendar-date-details"' : '') + '><time datetime="' + day +
+      '"' + (day === today ? ' aria-current="date"' : '') + '>' + Number(day.slice(-2)) + '</time></a></div>' : '').join('');
+    const strips = shown.map(({ title, start, end, inferred }, index) => {
+      const left = week.findIndex(day => day && day >= start);
+      const right = week.findLastIndex(day => day && day <= end);
+      const rangeText = title + ' · ' + start + ' 至 ' + end + (inferred ? ' · 依已確認活動日期彙整' : '');
+      return '<div class="calendar-band" data-tone="' + familyTone(title) + '" title="' + escape(rangeText) + '"' +
+        grid(left + 1, index + 2, right - left + 1) + '>' + (start < first ? '‹ ' : '開始 · ') +
+        escape(title) + (end > last ? ' ›' : ' · 截止') + '</div>';
+    }).join('');
+    const counts = week.map((day, index) => {
+      const chips = ['start', 'end'].map(kind => {
+        const count = new Set((events.get(day) ?? []).filter(entry => entry.kind === kind).map(entry => entry.item.id)).size;
+        return count ? '<a class="calendar-count calendar-count-' + kind + '" href="' + href(month, { day }) + '">' +
+          count + ' 項' + (kind === 'start' ? '開始' : '截止') + '</a>' : '';
+      }).join('');
+      return '<div class="calendar-counts"' + grid(index + 1, countRow) + '>' + chips + '</div>';
+    }).join('');
+    return '<div class="calendar-week">' + backgrounds + dates + strips + counts + '</div>' +
+      (bands.length > 3 ? '<a class="calendar-more" href="' + href(month, { day: selectedDay, expanded: !filters.expanded }) +
+        '">' + (filters.expanded ? '收合主活動' : '展開另外 ' + (bands.length - 3) + ' 個主活動') + '</a>' : '');
+  }).join('');
+  const details = (events.get(selectedDay) ?? []);
+  const detailGroups = ['start', 'end', 'claim'].map(kind => {
+    const entries = details.filter(entry => entry.kind === kind);
+    if (!entries.length) return '';
+    const groups = [...new Set(entries.map(({ item }) => familyTitle(item)))];
+    return '<h3>' + entries[0].label + '</h3>' + groups.map(title => '<h4>' + escape(title) + '</h4><ul>' +
+      entries.filter(({ item }) => familyTitle(item) === title).map(({ item, method }) =>
+        '<li><a href="/activities/' + item.id + (method ? '#' + method.id : '') + '">' +
+        escape(item.title + (method ? ' › ' + method.title : '')) + '</a></li>').join('') + '</ul>').join('');
+  }).join('');
   const options = activities.map(({ item, dates }) => {
     const known = dates.filter(entry => entry.point).length;
     const unavailable = dates.filter(entry => !entry.point);
@@ -272,13 +355,23 @@ function calendarPage(activities, month, message, selected = []) {
         escape((entry.method ? entry.method.title + ' · ' : '') + entry.label + ' · ' +
           (entry.source?.text ? '日期待確認 · ' + entry.source.text : '公告未載明日期')) + '</li>').join('') + '</ul></details>' : '') + '</li>';
   }).join('');
-  return page('活動日曆', primaryTabs('/calendar') + '<h1>活動日曆</h1><p><a href="/calendar?month=' + nearby(-1) +
-    '">← 上個月</a> · <strong>' + month + '</strong> · <a href="/calendar?month=' + nearby(1) + '">下個月 →</a></p>' +
-    '<div class="calendar-scroll"><table class="calendar-grid" aria-label="' + month + ' 活動日曆"><thead><tr>' +
-    [...'一二三四五六日'].map(day => '<th scope="col">' + day + '</th>').join('') + '</tr></thead><tbody>' + cells + '</tbody></table></div>' +
+  const filterFields = '<input type="hidden" name="month" value="' + month + '">';
+  return page('活動日曆', primaryTabs('/calendar') + '<h1>活動日曆</h1><p><a href="' + href(nearby(-1)) +
+    '">← 上個月</a> · <strong>' + month + '</strong> · <a href="' + href(nearby(1)) + '">下個月 →</a></p>' +
+    '<form class="calendar-filters" method="get" action="/calendar">' + filterFields +
+    '<label><input type="checkbox" name="watched" value="1"' + (filters.watched ? ' checked' : '') + '> 只看關注</label>' +
+    '<label>主活動 <select name="family"><option value="">全部</option>' + families.map(title => '<option' +
+      (title === filters.family ? ' selected' : '') + '>' + escape(title) + '</option>').join('') + '</select></label><button>套用篩選</button></form>' +
+    '<div class="calendar-layout"><div class="calendar-scroll"><div class="calendar-grid" aria-label="' + month + ' 活動日曆">' +
+    '<div class="calendar-week">' + [...'一二三四五六日'].map(day => '<div class="calendar-weekday">週' + day + '</div>').join('') +
+    '</div>' + cells + '</div></div><section class="calendar-details" id="calendar-date-details"><h2>' +
+    (selectedDay ? selectedDay.slice(5).replace('-', '/') + ' 活動清單' : '日期活動清單') + '</h2>' +
+    (selectedDay ? detailGroups || '<p>這天沒有符合篩選的活動日期。</p>' : '<p>點選日期或項目數量，查看活動名稱。</p>') + '</section></div>' +
     '<h2>選取活動匯出</h2>' + (message ? '<p role="alert">' + escape(message) + '</p>' : '') +
-    '<form method="post" action="/calendar"><input type="hidden" name="month" value="' + month + '"><ul>' + options +
-    '</ul><button>下載 .ics</button></form>');
+    '<details' + (message ? ' open' : '') + '><summary>選取要匯出的活動</summary><form method="post" action="/calendar">' + filterFields +
+    (filters.watched ? '<input type="hidden" name="watched" value="1">' : '') +
+    '<input type="hidden" name="family" value="' + escape(filters.family) + '"><ul>' + options +
+    '</ul><button>下載 .ics</button></form></details>');
 }
 
 function managementPage(saved, status, hasSnapshot) {
@@ -967,12 +1060,18 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
         const today = new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Taipei' }).format(now());
         const month = /^(?:19|20|21)\d{2}-(?:0[1-9]|1[0-2])$/.test(requested) ? requested : today.slice(0, 7);
         const items = await browsableItems(await readSaved('activity-source.json') ?? await readSaved());
-        const activities = items.map(calendarActivity);
-        if (req.method === 'GET') return respond(200, calendarPage(activities, month));
+        const all = items.map(calendarActivity);
+        const filters = { family: params.get('family') ?? '', watched: params.get('watched') === '1',
+          day: params.get('day') ?? '', expanded: params.get('expanded') === '1' };
+        const watches = filters.watched ? await readSaved('watches.json') ?? {} : {};
+        const activities = all.filter(({ item }) => (!filters.family || familyTitle(item) === filters.family) &&
+          (!filters.watched || watches[item.id] || item.methods.filter(method => method.kind === 'method').some(method =>
+            activityRewards(item, method).some(reward => watches[watchKey({ item, method, reward })]))));
+        if (req.method === 'GET') return respond(200, calendarPage(activities, all, month, today, filters));
         const ids = [...new Set(params.getAll('activity'))];
         const selected = activities.filter(({ item }) => ids.includes(item.id));
         if (!ids.length || selected.length !== ids.length || !selected.some(({ dates }) => dates.some(entry => entry.point))) {
-          return respond(422, calendarPage(activities, month, '請勾選至少一個有確定日期的活動。', ids));
+          return respond(422, calendarPage(activities, all, month, today, filters, '請勾選至少一個有確定日期的活動。', ids));
         }
         return res.writeHead(200, { 'Content-Type': 'text/calendar; charset=utf-8',
           'Content-Disposition': 'attachment; filename="maplestory-activities.ics"', 'X-Content-Type-Options': 'nosniff' })
