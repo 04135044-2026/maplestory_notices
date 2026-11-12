@@ -18,4 +18,13 @@ test('匯出只加選取且有依據的重置提醒，跳過官方排除的首�
   sources[2].text = '每天下午6:30重置。';
   assert.match(exportCalendar([calendarActivity(item)], now, 'http://localhost', { academy: ['DAILY'] }),
     /DTSTART:20260909T103000Z\r\nRRULE:FREQ=DAILY/);
+  range.text = '活動時間：2026/09/09 維護後 ~ 2026/10/20 23:59';
+  assert.match(exportCalendar([calendarActivity(item)], now, 'http://localhost', { academy: ['DAILY'] }),
+    /DTSTART:20260910T103000Z\r\nRRULE:FREQ=DAILY/);
+  sources[2].text = '每天不會在6:30重置。';
+  assert.doesNotMatch(exportCalendar([calendarActivity(item)], now, 'http://localhost', { academy: ['DAILY'] }), /RRULE/);
+  sources[1].text = '紀錄會於每週三0:00進行初始化。';
+  const shared = { ...item, methods: [{ ...item.methods[0], sourceIds: [], sharedSourceIds: ['date', 'weekly'] }] };
+  assert.match(exportCalendar([calendarActivity(shared)], now, 'http://localhost', { academy: ['WEEKLY'] }),
+    /DTSTART:20260915T160000Z\r\nRRULE:FREQ=WEEKLY/);
 });

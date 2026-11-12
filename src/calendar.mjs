@@ -1,20 +1,23 @@
 import { fingerprint } from './incremental.mjs';
 import { timeline } from './periods.mjs';
 import { official } from './notice.mjs';
+import { methodContext } from './catalog.mjs';
 
 const labels = { start: '開始', end: '截止', claim: '領獎截止' };
 const day = 86400000;
 const samePoint = (a, b) => a?.date === b?.date && a?.exact === b?.exact;
 const weekdays = '日一二三四五六';
-const resetPattern = /(?:每週([日天一二三四五六])|每日|每天)[^。；，,、週\d]{0,18}?(上午|下午|晚上|凌晨|中午)?(\d{1,2})[：:](\d{2})\s*(?:初始化|重置)/g;
+const resetPattern = /(?:每週([日天一二三四五六])|每日|每天)[^。；，,、週\d]{0,18}?(上午|下午|晚上|凌晨|中午)?(\d{1,2})[：:](\d{2})\s*(?:進行)?(?:初始化|重置)/g;
 
 function methodReminders(item, method) {
-  const { participation, resets } = timeline(item, method);
+  const { participation } = timeline(item, method);
+  const resets = methodContext(item, method).filter(source => !source.rows && /初始化|重置/.test(source.text));
   if (!participation.start || !participation.end) return [];
-  const start = participation.start.exact ?? Date.parse(participation.start.date + 'T00:00:00+08:00');
-  const until = participation.end.exact ?? Date.parse(participation.end.date + 'T23:59:59+08:00');
+  const start = participation.start.exact ?? Date.parse(participation.start.date + 'T00:00:00+08:00') + day;
+  const until = participation.end.exact ?? Date.parse(participation.end.date + 'T00:00:00+08:00') - 1000;
   const rules = [];
   for (const source of resets) {
+    if (/不會|不再|不在|不於|不重置|不初始化|取消|停用|UTC|GMT/i.test(source.text)) continue;
     for (const [, weekday, period, hour, minute] of source.text.matchAll(resetPattern)) {
       const rawHour = Number(hour);
       if (rawHour > 23 || Number(minute) > 59 || (period && (rawHour < 1 || rawHour > 12))) continue;
@@ -54,8 +57,14 @@ export function calendarActivity(item) {
       dates.push({ kind, ...value, method });
     }
   }
-  const reminders = item.methods.filter(method => method.kind === 'method').flatMap(method => methodReminders(item, method));
-  return { item, reminders, dates: dates.map(entry => ({ ...entry, label: labels[entry.kind] })) };
+  const reminders = new Map();
+  for (const method of item.methods.filter(method => method.kind === 'method')) {
+    for (const rule of methodReminders(item, method)) {
+      const key = JSON.stringify([rule.source.id, rule.frequency, rule.first, rule.until]);
+      if (!reminders.has(key)) reminders.set(key, rule);
+    }
+  }
+  return { item, reminders: [...reminders.values()], dates: dates.map(entry => ({ ...entry, label: labels[entry.kind] })) };
 }
 
 export function exportVersion(activity, frequencies = []) {
