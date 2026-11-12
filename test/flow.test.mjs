@@ -58,7 +58,7 @@ test('匯入官方公告後可從首頁搜尋獎勵，重開仍可查看獎勵�
     for (const [config, status, message] of failures) {
       url = await start({ ...options, ...config });
       assert.equal((await fetch(url + '/import', { method: 'POST' })).status, status);
-      assert.match(await (await fetch(url)).text(), message);
+      assert.match(await (await fetch(url + '/manage')).text(), message);
       const note = await (await fetch(url + '/note')).text();
       assert.match(note, /狩獵500隻後從介面領取/);
       assert.match(note, /未載明獨立領獎期限/);
