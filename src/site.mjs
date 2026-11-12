@@ -44,10 +44,10 @@ function searchResults(saved, query, now) {
     ' · ' + time.text + '</p><a href="' + href + '">查看取得方式 →</a></article>').join('');
 }
 
-function home(saved, query, now, status) {
+function home(saved, query, now, status, hasSnapshot = Boolean(saved)) {
   return page('新楓之谷公告懶人包', '<h1>新楓之谷公告懶人包</h1><form method="get"><label for="q">搜尋獎勵或活動</label> <input id="q" name="q" value="' +
     escape(query) + '"> <button>搜尋</button></form>' + searchResults(saved, query, now) +
-    (saved ? '<p><a href="/activities">查看公告 19129 的全部活動</a></p>' : '') +
+    (hasSnapshot ? '<p><a href="/activities">查看公告 19129 的全部活動</a></p>' : '') +
     '<details' + (status ? ' open' : '') + '><summary>公告管理</summary>' +
     (status ? '<p>' + escape(status) + '</p>' : '') +
     (saved ? '<p>已保存摘要：' + escape(new Date(saved.capturedAt).toLocaleString('zh-TW', { timeZone: 'Asia/Taipei' })) + '（台灣時間）</p>' : '') +
@@ -138,6 +138,7 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
     await rename(target + '.tmp', target);
   }
   return createServer(async (req, res) => {
+    let methodLocked = false;
     const respond = (status, body) => res.writeHead(status, {
       'Content-Type': 'text/html; charset=utf-8', 'X-Content-Type-Options': 'nosniff',
       'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'",
@@ -161,6 +162,7 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
           const snapshot = '19129-' + capturedAt.replace(/[:.]/g, '-') + '.html';
           await save(snapshot, html);
           sourceSaved = true;
+          await save('activity-source.json', JSON.stringify({ snapshot }));
           const notice = extract(html);
           const generated = await summarize(notice);
           const summary = validate(generated?.result ?? generated, notice);
@@ -172,15 +174,23 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
           if (!(error instanceof Problem)) throw error;
           const status = (sourceSaved ? '已保存來源，摘要待更新。' : '本次來源取得未完成。') + error.message;
           await save('status.json', JSON.stringify(status));
-          return respond(error.status, home(await readSaved(), '', now(), status));
+          return respond(error.status, home(await readSaved(), '', now(), status, Boolean(await readSaved('activity-source.json'))));
         } finally { importing = false; }
       }
-      if (req.method === 'GET' && url.pathname === '/') return respond(200, home(await readSaved(), url.searchParams.get('q')?.trim() ?? '', now(), await readSaved('status.json')));
-      if (url.pathname === '/activities' || url.pathname.startsWith('/activities/')) {
+      if (req.method === 'GET' && url.pathname === '/') {
         const saved = await readSaved();
+        return respond(200, home(saved, url.searchParams.get('q')?.trim() ?? '', now(), await readSaved('status.json'),
+          Boolean(await readSaved('activity-source.json') ?? saved)));
+      }
+      if (url.pathname === '/activities' || url.pathname.startsWith('/activities/')) {
+        if (req.method === 'POST') {
+          if (importing) throw new Problem('公告正在整理中。', 409);
+          importing = methodLocked = true;
+        }
+        const saved = await readSaved('activity-source.json') ?? await readSaved();
         if (!saved) throw new Problem('請先匯入公告 19129。', 404);
         if (catalogCache?.snapshot !== saved.snapshot) {
-          catalogCache = {
+          const entry = {
             snapshot: saved.snapshot,
             items: (async () => {
               const items = catalogFromSnapshot(await readFile(join(dir, saved.snapshot), 'utf8'));
@@ -188,6 +198,8 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
               return items;
             })(),
           };
+          catalogCache = entry;
+          entry.items.catch(() => { if (catalogCache === entry) catalogCache = undefined; });
         }
         const items = await catalogCache.items;
         if (req.method === 'GET' && url.pathname === '/activities') return respond(200, activityList(items, url.searchParams.get('q')?.trim() ?? '', now()));
@@ -199,17 +211,18 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
         if (req.method === 'GET' && !methodId) return respond(200, activityDetail(item, now(), summaries));
         const target = item.methods.find(method => method.id === methodId && method.kind === 'method');
         if (req.method === 'POST' && target) {
-          if (importing) throw new Problem('公告正在整理中。', 409);
-          importing = true;
-          try {
             const sources = methodContext(item, target);
             const generated = await summarizeActivityMethod({ title: item.title, method: target.title, sources });
-            const facts = validateMethod(generated.result, sources);
+            const known = methodFacts(item, target);
+            const facts = validateMethod(generated.result, sources, {
+              eligibility: item.eligibility ? [item.eligibility.id] : [],
+              steps: known.steps ? [known.steps.id] : [],
+              rewards: known.rewards.map(source => source.id),
+            });
             const updated = { ...summaries, [target.id]: { facts, model: generated.metadata, at: now().toISOString() } };
             await save('activity-methods.json', JSON.stringify({ snapshot: saved.snapshot, methods: updated }, null, 2));
             res.writeHead(303, { Location: '/activities/' + item.id + '#' + target.id }).end();
             return;
-          } finally { importing = false; }
         }
       }
       if (req.method !== 'GET') throw new Problem('操作不支援。', 405);
@@ -222,6 +235,8 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
       respond(error instanceof Problem ? error.status : 500,
         page('操作未完成', '<h1>操作未完成</h1><p>' + escape(error instanceof Problem ? error.message : '本機資料讀寫失敗。') +
         '</p><p><a href="/">回首頁</a></p>'));
+    } finally {
+      if (methodLocked) importing = false;
     }
   });
 }
