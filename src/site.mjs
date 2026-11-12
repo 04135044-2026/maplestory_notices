@@ -28,6 +28,9 @@ summary{cursor:pointer;font-weight:700}
 .image-preview{border:0;padding:0;margin:.5rem 0;background:transparent}
 .image-preview img{display:block;max-width:100%;width:auto;height:auto;max-height:min(65vh,30rem);object-fit:contain;margin:.6rem 0}
 .source-panel article:target{border-color:#17563d;outline:2px solid #17563d}
+.activity-nav{position:sticky;top:0;z-index:2;display:flex;align-items:center;justify-content:space-between;gap:.75rem;padding:.55rem 0;background:#f6f5ef;border-bottom:1px solid #d9e1d7}
+.official-button{white-space:nowrap;padding:.3rem .7rem;border:1px solid #b5cbbd;border-radius:.5rem;background:#fff;font-weight:700}
+main :target{scroll-margin-top:4rem}
 .source-table{overflow-x:auto;margin:.5rem 0}
 .source-table table{border-collapse:collapse;width:100%;font-size:.95rem}
 .source-table td,.source-table th{border:1px solid #bccbc1;padding:.45rem .6rem;vertical-align:top;white-space:pre-line;min-width:6em}
@@ -244,7 +247,12 @@ function sourceBody(source) {
 
 const isTable = source => Boolean(source?.cells?.length || source?.rows?.length);
 const evidenceLink = source => isTable(source)
-  ? ' <a href="#' + source.id + '">查看公告表格</a>' : ' ' + link;
+  ? ' <a href="#' + source.id + '">查看公告表格</a>' : '';
+
+function activityNav(backHref, backText) {
+  return '<nav class="activity-nav"><a href="' + backHref + '">' + backText + '</a>' +
+    '<a class="official-button" href="' + official + '" target="_blank" rel="noopener noreferrer">官方公告 ↗</a></nav>';
+}
 
 function activityDetail(item, now, summaries = {}, status = '', imageRecords = {}) {
   const periods = timeline(item);
@@ -308,8 +316,8 @@ function activityDetail(item, now, summaries = {}, status = '', imageRecords = {
       '<form method="post" action="/activities/' + item.id + '/' + method.id + '"><button>用 Gemini 整理這個方法</button></form></details></article>';
   }).join('');
   const shared = originalFlow(item.sources, item.images, '活動共用表格與圖片');
-  return page(item.title, '<nav><a href="/activities">← 全部活動</a></nav>' + eventLabel(item) + '<h1>' + escape(item.title) + '</h1><p>' +
-    activityState(periods, now) + ' · ' + link + '</p>' + (status ? '<p role="status">' + escape(status) + '</p>' : '') +
+  return page(item.title, activityNav('/activities', '← 全部活動') + eventLabel(item) + '<h1>' + escape(item.title) + '</h1><p>' +
+    activityState(periods, now) + '</p>' + (status ? '<p role="status">' + escape(status) + '</p>' : '') +
     '<dl><dt>參加資格</dt><dd>' + cite(item.eligibility) +
     (item.sharedEligibility && item.sharedEligibility.text !== item.eligibility?.text
       ? '</dd><dd>版本共用資格 · ' + cite(item.sharedEligibility) : '') +
@@ -348,9 +356,9 @@ function note(saved, now, query) {
     ? rewards.map(({ name, quantity, level }) =>
       row(fields.reward, level + '（選擇應援時）：' + name + ' ×' + quantity + '／次', notice.table)).join('')
     : fact('reward');
-  return page(activity, '<nav><a href="/?q=' + encodeURIComponent(query ?? notice.reward) + '">← 回搜尋結果</a></nav>' +
+  return page(activity, activityNav('/?q=' + encodeURIComponent(query ?? notice.reward), '← 回搜尋結果') +
     '<span class="event-label">星夜馬戲團 in 墮落城市</span><h1>' + activity +
-    '</h1><p>' + time.status + ' · ' + link + '</p><dl>' + fact('eligibility') + row('參加期間', time.text, notice.date?.id) +
+    '</h1><p>' + time.status + '</p><dl>' + fact('eligibility') + row('參加期間', time.text, notice.date?.id) +
     row('領獎期限', notice.claim ? '請查看公告所列領取條件' : '此活動段落未載明獨立領獎期限',
       notice.claim?.id ?? 'sources') + '</dl><article id="method"><h2>' + method +
     '</h2><dl>' + fact('first') + rewardDetails + fact('steps') + fact('limits') +
