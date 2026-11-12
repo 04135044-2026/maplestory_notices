@@ -23,6 +23,47 @@ function page(children) {
 }
 const html = page(heading('慶典活動', 20) + chair + stress + box);
 
+test('未知模板的原文經人工確認後可查閱，且只整理已選區塊', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'maple-review-'));
+  const snapshot = '19129-review.html';
+  await writeFile(join(dir, snapshot), '<main><p>接任務</p><p>帳號共用條件</p><p>不相干活動</p></main>');
+  await writeFile(join(dir, 'activity-source.json'), JSON.stringify({ snapshot }));
+  let calls = 0;
+  const options = { dir, summarizeActivityMethod: async ({ sources }) => {
+    calls++;
+    assert.deepEqual(sources.map(source => source.text), ['接任務', '帳號共用條件']);
+    return { result: { eligibility: [], steps: [], rewards: [], costs: [], probability: [], payment: [], limits: [] } };
+  } };
+  let server;
+  async function start() {
+    server = website(options);
+    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+    return 'http://127.0.0.1:' + server.address().port;
+  }
+  try {
+    let root = await start();
+    assert.equal((await fetch(root + '/activities')).status, 422);
+    const review = await (await fetch(root + '/review')).text();
+    assert.match(review, /不相干活動/);
+    const fingerprint = review.match(/name="fingerprint" value="([^"]+)"/)[1];
+    const form = new URLSearchParams({ fingerprint, title: '人工活動', method: '確認的方法', own: 'B1', shared: 'B2' });
+    const saved = await fetch(root + '/review', { method: 'POST', body: form, redirect: 'manual' });
+    assert.equal(saved.status, 303);
+    assert.equal(calls, 0);
+    await new Promise(resolve => server.close(resolve));
+    root = await start();
+    const detail = await (await fetch(root + saved.headers.get('location'))).text();
+    assert.match(detail, /確認的方法/);
+    assert.doesNotMatch(detail, /不相干活動/);
+    const action = detail.match(/action="(\/activities\/[^"]+)"/)[1];
+    assert.equal((await fetch(root + action, { method: 'POST', redirect: 'manual' })).status, 303);
+    assert.equal(calls, 1);
+  } finally {
+    if (server?.listening) await new Promise(resolve => server.close(resolve));
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test('模板區分子活動，改標題與換順序後保留識別，未知版型需確認', () => {
   const items = catalogFromSnapshot(html);
   const moved = catalogFromSnapshot(page(heading('慶典活動', 20) + box + stress + chair.replace('【三眼章魚直火燒烤】', '【燒烤活動】')));

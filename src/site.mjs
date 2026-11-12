@@ -3,6 +3,7 @@ import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { activity, extract, fetchNotice, fields, gemini, method, official, Problem, validate } from './notice.mjs';
 import { catalogFromSnapshot, methodContext, methodFacts, methodFields, summarizeMethod, validateMethod } from './catalog.mjs';
+import { manualActivity, mergeManual, reviewDocument } from './review.mjs';
 
 const escape = value => String(value).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]);
 const link = '<a href="' + official + '" target="_blank" rel="noopener noreferrer">查看官方公告 ↗</a>';
@@ -51,13 +52,42 @@ function home(saved, query, now, status, hasSnapshot = Boolean(saved)) {
     '<details' + (status ? ' open' : '') + '><summary>公告管理</summary>' +
     (status ? '<p>' + escape(status) + '</p>' : '') +
     (saved ? '<p>已保存摘要：' + escape(new Date(saved.capturedAt).toLocaleString('zh-TW', { timeZone: 'Asia/Taipei' })) + '（台灣時間）</p>' : '') +
+    (hasSnapshot ? '<p><a href="/review">檢視與調整公告拆分</a></p>' : '') +
     '<form method="post" action="/import"><button>匯入並整理公告 19129</button></form></details>');
 }
 
-function activityList(activities, query, now) {
+function reviewPage(document, automatic, previous, message) {
+  const options = automatic.flatMap(item => item.methods.filter(method => method.kind === 'method')
+    .map(method => '<option value="' + method.id + '">' + escape(item.title + ' › ' + method.title) + '</option>')).join('');
+  return page('檢視公告拆分', '<nav><a href="/">← 首頁</a> · <a href="/activities">查看活動</a></nav><h1>檢視公告拆分</h1>' +
+    '<p>' + escape(message) + '</p>' +
+    (previous && previous.fingerprint !== document.fingerprint ? '<p role="status">來源已變更，舊人工歸屬需重新核對。</p>' : '') +
+    '<p><a href="/review/source" download>下載完整來源快照</a></p>' +
+    (previous ? '<p>已保存人工確認：' + previous.entries.map(entry => escape(entry.title + ' › ' + entry.methods[0].title)).join('、') + '</p>' : '') +
+    '<form method="post"><input type="hidden" name="fingerprint" value="' + document.fingerprint + '">' +
+    '<p><label>要調整的方法 <select name="target"><option value="">新增活動或方法</option>' + options + '</select></label></p>' +
+    '<p><label>活動名稱 <input name="title" required maxlength="100"></label></p><p><label>方法名稱 <input name="method" required maxlength="100"></label></p>' +
+    document.blocks.map(block => '<article><strong>' + block.id + '</strong><pre>' + escape(block.text) + '</pre>' +
+      block.images.map((url, index) => '<p><a href="' + escape(url) + '">官方圖片 ' + (index + 1) + '</a></p>').join('') +
+      '<label><input type="checkbox" name="own" value="' + block.id + '">方法內容</label> ' +
+      '<label><input type="checkbox" name="shared" value="' + block.id + '">適用共用條件</label></article>').join('') +
+    '<button>確認並保存拆分</button></form>');
+}
+
+async function formData(req) {
+  let body = '';
+  for await (const chunk of req) {
+    body += chunk;
+    if (body.length > 100_000) throw new Problem('表單內容過大。', 413);
+  }
+  return new URLSearchParams(body);
+}
+
+function activityList(activities, query, now, pending = false) {
   const entries = activities.filter(item => !query || item.title.includes(query) || item.methods.some(method => method.title.includes(query)));
   return page('公告 19129 活動', '<nav><a href="/">← 首頁</a></nav><h1>' + escape(activities[0].pageTitle) +
-    '</h1><p>' + link + '</p><form><label for="q">活動名稱</label> <input id="q" name="q" value="' + escape(query) +
+    '</h1><p>' + link + '</p>' + (pending ? '<p>新來源拆分待確認，目前顯示上次成功的活動。<a href="/review">檢視來源</a></p>' : '') +
+    '<form><label for="q">活動名稱</label> <input id="q" name="q" value="' + escape(query) +
     '"> <button>搜尋</button></form>' +
     (entries.length ? entries.map(item => {
       const time = timing(item.dates, now);
@@ -182,6 +212,44 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
         return respond(200, home(saved, url.searchParams.get('q')?.trim() ?? '', now(), await readSaved('status.json'),
           Boolean(await readSaved('activity-source.json') ?? saved)));
       }
+      if (url.pathname === '/review' || url.pathname === '/review/source') {
+        if (req.method === 'POST') {
+          if (importing) throw new Problem('公告正在處理中。', 409);
+          importing = methodLocked = true;
+        }
+        const source = await readSaved('activity-source.json') ?? await readSaved();
+        if (!source) throw new Problem('請先匯入公告 19129。', 404);
+        const html = await readFile(join(dir, source.snapshot), 'utf8');
+        if (req.method === 'GET' && url.pathname === '/review/source') {
+          return res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8',
+            'Content-Disposition': 'attachment; filename="19129-source.txt"', 'X-Content-Type-Options': 'nosniff' }).end(html);
+        }
+        const document = reviewDocument(html);
+        const previous = await readSaved('manual-split.json');
+        let automatic = [];
+        let message = '已辨識公告模板。可調整方法的原文歸屬；摘要欄位請在活動頁檢視。';
+        try { automatic = catalogFromSnapshot(html); }
+        catch (error) {
+          if (!(error instanceof Problem)) throw error;
+          message = error.message;
+        }
+        if (req.method === 'GET') return respond(200, reviewPage(document, automatic, previous, message));
+        if (req.method !== 'POST' || url.pathname !== '/review') throw new Problem('操作不支援。', 405);
+        const item = manualActivity(document, await formData(req), automatic);
+        const entries = previous?.fingerprint === document.fingerprint ? previous.entries : [];
+        const next = { fingerprint: document.fingerprint, snapshot: source.snapshot,
+          entries: [...entries.filter(entry => entry.methods[0].id !== item.methods[0].id), item] };
+        const summaries = await readSaved('activity-methods.json');
+        if (summaries?.snapshot === source.snapshot && summaries.methods[item.methods[0].id]) {
+          delete summaries.methods[item.methods[0].id];
+          await save('activity-methods.json', JSON.stringify(summaries, null, 2));
+        }
+        if (previous && previous.fingerprint !== document.fingerprint) {
+          await save('manual-split-' + previous.fingerprint + '.json', JSON.stringify(previous, null, 2));
+        }
+        await save('manual-split.json', JSON.stringify(next, null, 2));
+        return res.writeHead(303, { Location: '/activities/' + item.id + '#' + item.methods[0].id }).end();
+      }
       if (url.pathname === '/activities' || url.pathname.startsWith('/activities/')) {
         if (req.method === 'POST') {
           if (importing) throw new Problem('公告正在整理中。', 409);
@@ -201,7 +269,27 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
           catalogCache = entry;
           entry.items.catch(() => { if (catalogCache === entry) catalogCache = undefined; });
         }
-        const items = await catalogCache.items;
+        const pendingItems = catalogCache.items;
+        let items;
+        const manual = await readSaved('manual-split.json');
+        const html = manual ? await readFile(join(dir, saved.snapshot), 'utf8') : null;
+        const confirmed = manual && reviewDocument(html).fingerprint === manual.fingerprint ? manual.entries : [];
+        try { items = await pendingItems; }
+        catch (error) {
+          if (!(error instanceof Problem)) throw error;
+          if (!confirmed.length) {
+            const old = await readSaved('activity-catalog.json');
+            if (req.method === 'GET' && old?.snapshot !== saved.snapshot && old?.items?.length) {
+              const item = old.items.find(item => url.pathname === '/activities/' + item.id);
+              if (item) return respond(200, activityDetail(item, now(), {}, '新來源拆分待確認，目前顯示上次成功的活動。'));
+              if (url.pathname === '/activities') return respond(200, activityList(old.items, '', now(), true));
+            }
+            return respond(422, page('拆分待確認', '<h1>拆分待確認</h1><p>' + escape(error.message) +
+              '</p><p><a href="/review">檢視來源並調整拆分</a></p>'));
+          }
+          items = [];
+        }
+        items = mergeManual(items, confirmed);
         if (req.method === 'GET' && url.pathname === '/activities') return respond(200, activityList(items, url.searchParams.get('q')?.trim() ?? '', now()));
         const [, , activityId, methodId, extra] = url.pathname.split('/');
         const item = items.find(item => item.id === activityId);
