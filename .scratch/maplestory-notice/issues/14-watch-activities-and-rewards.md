@@ -6,7 +6,7 @@
 
 **Status:** ready-for-agent
 
-**Completion:** pending
+**Completion:** ready for player acceptance
 
 **Specification:** [正式規格 v1.2](../../../SPEC.md)；US-020、US-021；D1、D8；AC07、AC21。
 
@@ -27,3 +27,6 @@
 完成時記錄使用的來源案例、實際操作／驗證結果及尚存限制。涉及真實模型呼叫時，記錄可取得用量；未知量明示未知。前置任務未完成時保持等待，不以 ready-for-agent 標記取代依賴檢查。
 
 ## Comments
+
+- 本機 HTTP 測試關注三眼章魚活動與椅子、首頁只看關注篩選，再新增有依據的官方更正。兩個受影響項目顯示來源更新，12 項測試通過。
+- 活動以穩定活動 ID 保存，獎勵以活動、方法、獎勵名稱及組別保存。來源暫時無法對應時，仍保留關注紀錄供離線查閱。
