@@ -30,6 +30,7 @@ summary{cursor:pointer;font-weight:700}
 .source-panel article:target{border-color:#17563d;outline:2px solid #17563d}
 .activity-nav{position:sticky;top:0;z-index:2;display:flex;align-items:center;justify-content:space-between;gap:.75rem;padding:.55rem 0;background:#f6f5ef;border-bottom:1px solid #d9e1d7}
 .official-button{white-space:nowrap;padding:.3rem .7rem;border:1px solid #b5cbbd;border-radius:.5rem;background:#fff;font-weight:700}
+.search-home-link{display:inline-block;margin-inline-start:.5rem;padding:.45rem .65rem;border:1px solid #b5cbbd;border-radius:.4rem;background:#fff;white-space:nowrap}
 main :target{scroll-margin-top:4rem}
 .source-table{overflow-x:auto;margin:.5rem 0}
 .source-table table{border-collapse:collapse;width:100%;font-size:.95rem}
@@ -179,10 +180,12 @@ function catalogResults(items, filters, now, images, saved) {
 }
 
 function home(saved, query, now, status, hasSnapshot = Boolean(saved), listing) {
+  const hasSearch = query || listing?.filters.status || listing?.filters.type;
   return page('新楓之谷公告懶人包', '<h1>新楓之谷公告懶人包</h1><form method="get"><label for="q">搜尋獎勵或活動</label> <input id="q" name="q" value="' +
     escape(query) + '"> ' + (listing ? filterOptions('state', statuses, listing.filters.status, '活動狀態') + ' ' +
       filterOptions('type', rewardTypes, listing.filters.type, '獎勵類型') + ' ' : '') +
-    '<button>搜尋</button></form>' + (listing ? catalogResults(listing.items, listing.filters, now, listing.images,
+    '<button>搜尋</button>' + (hasSearch ? '<a class="search-home-link" href="/">回首頁</a>' : '') +
+    '</form>' + (listing ? catalogResults(listing.items, listing.filters, now, listing.images,
       listing.snapshot === saved?.snapshot ? saved : null) : searchResults(saved, query, now)) +
     (hasSnapshot ? '<p><a href="/activities">查看公告 19129 的全部活動</a></p>' : '') +
     '<details' + (status ? ' open' : '') + '><summary>公告管理</summary>' +
