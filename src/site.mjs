@@ -54,13 +54,16 @@ document.addEventListener('submit', async event => {
   const button = event.submitter;
   if (form.dataset.pending) return;
   form.dataset.pending = 'true';
-  const report = document.createElement('p');
+  const report = form.querySelector('.image-status') || document.createElement('p');
+  report.className = 'image-status';
   report.setAttribute('role', 'status');
   report.textContent = '正在處理這張圖片…';
-  form.append(report);
+  if (!report.isConnected) form.append(report);
   try {
     const body = new URLSearchParams(new FormData(form, button));
-    const response = await fetch(form.action, { method: 'POST', body });
+    const endpoint = new URL(form.getAttribute('action'), location.href);
+    endpoint.hash = '';
+    const response = await fetch(endpoint, { method: 'POST', body });
     const documentAfter = new DOMParser().parseFromString(await response.text(), 'text/html');
     const newCard = documentAfter.getElementById(card.id);
     if (!response.ok || !newCard) throw new Error(documentAfter.querySelector('h1 + p')?.textContent || '圖片更新失敗。');
@@ -229,13 +232,25 @@ function activityDetail(item, now, summaries = {}, status = '', imageRecords = {
     (sources.length ? sources.map(source => '<dd>' + cite(source) +
       imagesFor((source.images ?? []).filter(url => allowedImages.includes(url))) + '</dd>').join('') : '<dd>未載明／待確認</dd>');
   const placed = new Set();
+  const linkedImages = new Set();
+  const imageSource = (url, source) => {
+    if (linkedImages.has(url)) return '';
+    linkedImages.add(url);
+    const key = imageKey(url);
+    const text = source?.text.split('\n')[0].replace(/^🎸\s*/u, '').trim() || item.title;
+    const fragment = encodeURIComponent(text.slice(0, 85)).replaceAll('-', '%2D');
+    return '<div id="source-image-' + key + '"><details class="image-preview"><summary>預覽對應原圖</summary>' +
+      '<img loading="lazy" src="' + (imageRecords[key]?.version ? '/images/' + key : escape(url)) + '" alt="對應的官方原圖"></details>' +
+      '<p><a href="' + official + '#:~:text=' + fragment + '" target="_blank" rel="noopener noreferrer">到官方公告查看圖片附近原文 ↗</a></p></div>';
+  };
   const imagesFor = urls => urls.filter(url => !placed.has(url)).map(url => {
     placed.add(url);
     const key = imageKey(url);
     const record = imageRecords[key];
     const figure = !(record?.selected ?? item.shopImages?.includes(url)) ? '' : '<figure><img loading="lazy" style="max-width:100%" src="' +
       (record?.version ? '/images/' + key : escape(url)) + '" alt="' + escape(record?.appearance || '官方原圖') + '">' +
-      '<figcaption>' + escape(record?.appearance || '官方原圖 · 物品對應待確認') + '</figcaption></figure>';
+      '<figcaption>' + escape(record?.appearance || '官方原圖 · 物品對應待確認') +
+      ' · <a href="#source-image-' + key + '">查看圖片的公告位置</a></figcaption></figure>';
     return '<div id="slot-image-' + key + '">' + figure + '</div>';
   }).join('');
   const sections = item.methods.map(method => {
@@ -274,7 +289,9 @@ function activityDetail(item, now, summaries = {}, status = '', imageRecords = {
     showPeriod('領獎期限', periods.claim) + '</dl>' + sections + imagesFor(item.images) +
     '<details class="source-panel" id="sources"><summary>官方公告段落（' + item.sources.length + '）</summary>' +
     item.sources.map(source => '<article id="' + source.id + '"><small>' +
-      escape(source.scope) + '</small><pre>' + escape(source.text) + '</pre></article>').join('') + '</details>' +
+      escape(source.scope) + '</small><pre>' + escape(source.text) + '</pre>' +
+      (source.images ?? []).filter(url => item.images.includes(url)).map(url => imageSource(url, source)).join('') + '</article>').join('') +
+    item.images.map(url => imageSource(url)).join('') + '</details>' +
     '<details id="image-library"><summary>官方圖片來源與選圖</summary>' +
     item.images.map((url, i) => {
       const key = imageKey(url);
