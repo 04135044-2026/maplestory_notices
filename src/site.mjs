@@ -17,34 +17,56 @@ function timing(dates, now) {
   return { status, text: start.replaceAll('-', '/') + ' ～ ' + end.slice(5).replace('-', '/') + '（起迄時刻未載明）' };
 }
 
+function matchingRewards(notice, query) {
+  const table = notice.sources.find(source => source.id === notice.table)?.rows;
+  const [groups = [], ...rows] = table ?? [];
+  const rewards = rows.flatMap(row => groups.flatMap((level, group) => {
+    const [name, quantity] = row.slice(group * 2, group * 2 + 2);
+    return name && /^\d+$/.test(quantity) ? [{ name, quantity, level }] : [];
+  }));
+  if (!rewards.length) rewards.push({ name: notice.reward, quantity: notice.quantity, level: 'Lv259以下' });
+  if (!query || [activity, method].some(name => name.includes(query))) {
+    return rewards.filter(reward => reward.name === notice.reward);
+  }
+  return rewards.filter(reward => reward.name.includes(query));
+}
+
+function searchResults(saved, query, now) {
+  if (!saved) return '<p>尚未整理公告，匯入後即可搜尋。</p>';
+  const rewards = matchingRewards(saved.notice, query);
+  if (!rewards.length) return '<p>在已收錄的獎勵或活動中找不到符合的名稱。</p>';
+  const time = timing(saved.notice.dates, now);
+  const href = query ? '/note?q=' + encodeURIComponent(query) + '#method' : '/note#method';
+  return rewards.map(({ name, quantity, level }) => '<article><h2>' + escape(name) + ' ×' + escape(quantity) +
+    '／次</h2><p>' + activity + ' › ' + method + ' · ' + escape(level) + '</p><p>' + time.status +
+    ' · ' + time.text + '</p><a href="' + href + '">查看取得方式 →</a></article>').join('');
+}
+
 function home(saved, query, now, status) {
-  let result = '';
-  if (!saved) result = '<p>尚未整理公告，匯入後即可搜尋。</p>';
-  else if (!query || [saved.notice.reward, activity, method].some(value => value.includes(query))) {
-    const time = timing(saved.notice.dates, now);
-    result = '<article><h2>' + escape(saved.notice.reward) + ' ×' + escape(saved.notice.quantity) +
-      '／次</h2><p>' + activity + ' › ' + method + '</p><p>' + time.status +
-      ' · ' + time.text + '</p><a href="/note#method">查看取得方式 →</a></article>';
-  } else result = '<p>在已收錄的獎勵或活動中找不到符合的名稱。</p>';
   return page('新楓之谷公告懶人包', '<h1>新楓之谷公告懶人包</h1><form method="get"><label for="q">搜尋獎勵或活動</label> <input id="q" name="q" value="' +
-    escape(query) + '"> <button>搜尋</button></form>' + result +
+    escape(query) + '"> <button>搜尋</button></form>' + searchResults(saved, query, now) +
     '<details' + (status ? ' open' : '') + '><summary>公告管理</summary>' +
     (status ? '<p>' + escape(status) + '</p>' : '') +
     (saved ? '<p>已保存摘要：' + escape(new Date(saved.capturedAt).toLocaleString('zh-TW', { timeZone: 'Asia/Taipei' })) + '（台灣時間）</p>' : '') +
     '<form method="post" action="/import"><button>匯入並整理公告 19129</button></form></details>');
 }
 
-function note(saved, now) {
+function note(saved, now, query) {
   const { notice, summary } = saved;
   const time = timing(notice.dates, now);
   const row = (title, value, source) => '<dt>' + title + '</dt><dd>' + escape(value) +
     (source ? ' <a href="#' + source + '">查看依據</a>' : '') + '</dd>';
   const fact = key => row(fields[key], summary[key].text, summary[key].source);
-  return page(activity, '<nav><a href="/?q=' + encodeURIComponent(notice.reward) + '">← 回搜尋結果</a></nav><h1>' + activity +
+  const rewards = query ? matchingRewards(notice, query) : [];
+  const rewardDetails = rewards.some(reward => reward.name !== notice.reward)
+    ? rewards.map(({ name, quantity, level }) =>
+      row(fields.reward, level + '（選擇應援時）：' + name + ' ×' + quantity + '／次', notice.table)).join('')
+    : fact('reward');
+  return page(activity, '<nav><a href="/?q=' + encodeURIComponent(query ?? notice.reward) + '">← 回搜尋結果</a></nav><h1>' + activity +
     '</h1><p>' + time.status + ' · ' + link + '</p><dl>' + fact('eligibility') + row('參加期間', time.text, notice.date?.id) +
     row('領獎期限', notice.claim ? '請查看公告所列領取條件' : '此活動段落未載明獨立領獎期限',
       notice.claim?.id ?? 'sources') + '</dl><article id="method"><h2>' + method +
-    '</h2><dl>' + ['first', 'reward', 'steps', 'limits'].map(fact).join('') +
+    '</h2><dl>' + fact('first') + rewardDetails + fact('steps') + fact('limits') +
     '</dl><a href="#' + notice.table + '">查看應援規則與獎勵表</a></article><h2 id="sources">官方公告段落</h2>' +
     notice.sources.map(source => '<article id="' + source.id + '"><pre>' + escape(source.text) + '</pre></article>').join(''));
 }
@@ -103,7 +125,7 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
       if (url.pathname === '/') return respond(200, home(await readSaved(), url.searchParams.get('q')?.trim() ?? '', now(), await readSaved('status.json')));
       if (url.pathname === '/note') {
         const saved = await readSaved();
-        if (saved) return respond(200, note(saved, now()));
+        if (saved) return respond(200, note(saved, now(), url.searchParams.get('q')));
       }
       throw new Problem('找不到頁面。', 404);
     } catch (error) {

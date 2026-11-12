@@ -11,7 +11,8 @@ const html = '<h3>活動時間：</h3><p>2026/10/21 09:00 ~ 2026/12/01 23:59</p>
   '<p>活動日期：10/21 ~ 12/1</p><p>活動資格：Lv200</p><p>每週三選擇應援</p>' +
   '<p style="font-size:15pt;font-weight:700">【燃燒之城應援】</p>' +
   '<p>狩獵500隻怪物後從UI領取</p><table><tr><td>Lv259以下</td><td>Lv260以上</td></tr>' +
-  '<tr><td>核心寶石(1個)交換券</td><td>5</td></tr></table><p>每日10次，每週30次</p>' +
+  '<tr><td>核心寶石(1個)交換券</td><td>5</td><td>靈魂艾爾達碎片交換券</td><td>1</td></tr>' +
+  '<tr><td>特殊名譽勳章</td><td>1</td></tr></table><p>每日10次，每週30次</p>' +
   '<p style="font-size:15pt;font-weight:700">【墮落雷霆應援】</p>';
 
 test('匯入官方公告後可從首頁搜尋獎勵，重開仍可查看獎勵取得方法與期限', async () => {
@@ -37,8 +38,16 @@ test('匯入官方公告後可從首頁搜尋獎勵，重開仍可查看獎勵�
     let url = await start(options);
     assert.equal((await fetch(url + '/import', { method: 'POST' })).status, 200);
     const result = await (await fetch(url + '/?q=核心寶石')).text();
-    assert.match(result, /\/note#method/);
+    assert.match(result, /\/note\?q=[^"]+#method/);
     assert.match(result, /進行中/);
+    const medalQuery = encodeURIComponent('特殊名譽勳章');
+    const medal = await (await fetch(url + '/?q=' + medalQuery)).text();
+    assert.match(medal, /<h2>特殊名譽勳章 ×1／次<\/h2>/);
+    assert.match(medal, /燃燒之城應援 · Lv259以下/);
+    const medalNote = await (await fetch(url + '/note?q=' + medalQuery)).text();
+    assert.ok(medalNote.includes('/?q=' + medalQuery));
+    const fragment = await (await fetch(url + '/?q=靈魂艾爾達碎片')).text();
+    assert.match(fragment, /燃燒之城應援 · Lv260以上/);
     await new Promise(resolve => server.close(resolve));
     const failures = [
       [{ fetchSource: async () => '' }, 422, /空白公告/],
