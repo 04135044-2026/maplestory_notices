@@ -12,12 +12,16 @@ function nodeText($, element) {
   const copy = $(element).clone();
   copy.find('br').replaceWith('\n');
   if (element.tagName === 'table') {
-    return copy.find('tr').map((_, row) => $(row).find('th,td').map((__, cell) => clean($(cell).text())).get().join(' | ')).get().join('\n');
+    return tableRows($, element).map(row => row.join(' | ')).join('\n');
   }
   if (['ul', 'ol'].includes(element.tagName)) {
     return copy.children('li').map((_, item) => clean($(item).text())).get().join('\n');
   }
   return clean(copy.text());
+}
+
+function tableRows($, table) {
+  return $(table).find('tr').toArray().map(row => $(row).children('th,td').map((_, cell) => clean($(cell).text())).get());
 }
 
 const digest = value => createHash('sha256').update(value).digest('hex').slice(0, 20);
@@ -96,7 +100,8 @@ export function splitNotice(html) {
   function paragraphs(nodes, scope) {
     return nodes.filter(node => ['p','table','ul','ol','li'].includes(node.tagName)).flatMap(node => {
       const text = nodeText($, node);
-      return text ? [{ id: `P${String(++ordinal).padStart(3, '0')}`, scope, text }] : [];
+      return text ? [{ id: `P${String(++ordinal).padStart(3, '0')}`, scope, text,
+        rows: node.tagName === 'table' ? tableRows($, node) : undefined }] : [];
     });
   }
   const sharedSources = [];
