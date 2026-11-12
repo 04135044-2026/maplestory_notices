@@ -11,6 +11,7 @@ import { fetchCorrection, officialCorrectionUrl, verifiedSource, withCorrections
 import { activityState, periodText, timeline } from './periods.mjs';
 import { rewardTypes, searchCatalog, statuses } from './search.mjs';
 import { watchKey, watchVersion } from './watch.mjs';
+import { editChanged, editEvidence, editKey } from './manual-edits.mjs';
 import { answerPlayer, compareMethods, playerAssistant, searchWithAgent } from './player-assist.mjs';
 import { announcementUrl, collectAnnouncements, discoveryWindow, officialAnnouncement, officialPages, saveAnnouncement } from './discovery.mjs';
 import { sourceTracking } from './tracking.mjs';
@@ -236,7 +237,7 @@ function managementPage(saved, status, hasSnapshot) {
   return page('公告管理', primaryTabs('/manage') + '<h1>公告管理</h1>' +
     '<nav class="site-tabs" aria-label="公告管理功能">' +
     '<a href="/discover">公告探索</a><a href="/tracking">活動來源追蹤</a><a href="/schedule">每日更新排程</a><a href="/jobs">批次進度與重試</a>' +
-    (hasSnapshot ? '<a href="/review">檢視與調整公告拆分</a><a href="/updates">來源與摘要更新</a><a href="/corrections">來源關聯與更正</a>' : '') + '</nav>' +
+    (hasSnapshot ? '<a href="/review">檢視與調整公告拆分</a><a href="/updates">來源與摘要更新</a><a href="/corrections">來源關聯與更正</a><a href="/edits">修正摘要</a>' : '') + '</nav>' +
     (status ? '<p role="status">' + escape(status) + '</p>' : '') +
     (saved?.capturedAt ? '<p>已保存摘要 · ' + escape(formatTimestamp(saved.capturedAt)) + '</p>' : '') +
     '<form method="post" action="/import"><button>匯入並整理公告 19129</button></form>');
@@ -474,7 +475,7 @@ function comparisonPage(methods, from, selections = [], result, error) {
     (error ? '<p role="alert">' + escape(error) + '</p>' : '') + output);
 }
 
-function activityDetail(item, now, summaries = {}, status = '', imageRecords = {}, provider = 'gemini', watches) {
+function activityDetail(item, now, summaries = {}, status = '', imageRecords = {}, provider = 'gemini', watches, edits = {}) {
   const periods = timeline(item);
   const showPeriod = (label, period, field) => {
     const change = period.change;
@@ -528,6 +529,16 @@ function activityDetail(item, now, summaries = {}, status = '', imageRecords = {
       methodContext(item, method).filter(source => method.sourceIds.includes(source.id)), method.images,
       '補充說明 · ' + escape(method.title));
     const { steps, rewards, costs, chances, limits } = methodFacts(item, method);
+    const manual = edits[editKey(item, method)]?.fields ?? {};
+    const summary = summaries[method.id];
+    const auto = summary ? summaryForDisplay(summary, methodContext(item, method)) : {};
+    const editableSummary = Object.entries(methodFields).map(([key, label]) => {
+      const edit = manual[key];
+      if (!edit) return facts(label, (auto[key] ?? []).map(fact => ({ text: fact.text, id: fact.source })));
+      const changed = editChanged(edit.baseline, editEvidence(item, method, summary, key));
+      return '<dt>' + label + ' · 個人修正</dt><dd>' + escape(edit.text) +
+        (changed ? '<p role="status">來源或自動摘要已變更，請核對個人修正。</p>' : '') + '</dd>';
+    }).join('');
     const rewardLabel = chances.some(source => source.text.includes('可能獲得')) ? '可能獎勵' : '獎勵';
     const shortRewards = rewards.filter(source => !source.text.includes('\n'));
     const ownImages = method.images.filter(url => !item.sharedImages?.includes(url) || method.sourceIds.length === 0);
@@ -547,8 +558,8 @@ function activityDetail(item, now, summaries = {}, status = '', imageRecords = {
       '</dl>' + originalFlow(methodContext(item, method)
         .filter(source => method.sourceIds.includes(source.id) || item.local.includes(source)), ownImages,
         '公告表格與圖片') + '<details><summary>摘要整理</summary>' +
-      (summaries[method.id] ? '<dl>' + Object.entries(methodFields).map(([key, label]) =>
-        facts(label, summaryForDisplay(summaries[method.id], methodContext(item, method))[key].map(fact => ({ text: fact.text, id: fact.source })))).join('') + '</dl>' : '<p>尚未整理這個方法。</p>') +
+      (summary || Object.keys(manual).length ? '<dl>' + editableSummary + '</dl>' : '<p>尚未整理這個方法。</p>') +
+      '<p><a href="/edits?method=' + method.id + '">修正摘要</a></p>' +
       '<form method="post" action="/activities/' + item.id + '/' + method.id + '"><button>用預設模型整理這個方法</button></form></details></article>';
   }).join('');
   const shared = originalFlow(item.sources, item.images, '活動共用表格與圖片');
@@ -888,6 +899,63 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
         const saved = await readSaved();
         const source = await readSaved('activity-source.json') ?? saved;
         return respond(200, managementPage(saved, await readSaved('status.json'), Boolean(source) || (await discoveredItems()).length > 0));
+      }
+      if (url.pathname === '/edits') {
+        if (req.method === 'POST') lockModel();
+        const edits = await readSaved('manual-edits.json') ?? {};
+        const summaries = (await readSaved('activity-methods.json'))?.methods ?? {};
+        const items = await browsableItems(await readSaved('activity-source.json') ?? await readSaved());
+        const methods = items.flatMap(item => item.methods.filter(method => method.kind === 'method')
+          .map(method => ({ item, method, id: editKey(item, method) })));
+        const form = req.method === 'POST' ? await formData(req) : url.searchParams;
+        const selected = methods.find(({ method }) => method.id === form.get('method'));
+        if (req.method === 'POST') {
+          const id = form.get('id');
+          const field = form.get('field');
+          const action = form.get('action');
+          const text = (form.get('text') ?? '').trim();
+          if (!/^[a-f0-9]{64}$/.test(id ?? '') || !Object.hasOwn(methodFields, field) ||
+              !['save', 'restore'].includes(action)) throw new Problem('請選擇有效的修正項目。');
+          if (action === 'restore') {
+            if (!edits[id]?.fields[field]) throw new Problem('找不到已保存的個人修正。', 404);
+            delete edits[id].fields[field];
+            if (!Object.keys(edits[id].fields).length) delete edits[id];
+          } else {
+            if (!selected || selected.id !== id || !text || text.length > 4000) throw new Problem('請選擇目前的方法並填寫修正內容。');
+            const { item, method } = selected;
+            const record = edits[id] ??= { activity: item.title, method: method.title, fields: {} };
+            record.fields[field] = { text, baseline: editEvidence(item, method, summaries[method.id], field) };
+          }
+          await save('manual-edits.json', JSON.stringify(edits));
+          const confirmed = selected ? '?method=' + encodeURIComponent(selected.method.id) : '';
+          return res.writeHead(303, { Location: '/edits' + confirmed }).end();
+        }
+        if (req.method !== 'GET') throw new Problem('操作不支援。', 405);
+        const query = (form.get('q') ?? '').trim();
+        const formFields = (id, field, method = '') => '<input type="hidden" name="id" value="' + id +
+          '"><input type="hidden" name="field" value="' + field + '"><input type="hidden" name="method" value="' + escape(method) + '">';
+        const unavailable = Object.entries(edits).filter(([id]) => !methods.some(method => method.id === id));
+        const editor = selected ? '<p><a href="/activities/' + selected.item.id + '#' + selected.method.id + '">查看活動筆記</a></p>' +
+          Object.entries(methodFields).map(([field, label]) => {
+            const edit = edits[selected.id]?.fields[field];
+            const current = editEvidence(selected.item, selected.method, summaries[selected.method.id], field);
+            const evidence = (title, record) => '<details><summary>' + title + '</summary><p>' +
+              escape(record.facts.join('、') || '尚無自動摘要') + '</p><pre>' + escape(record.sources.join('\n\n')) + '</pre></details>';
+            return '<article><h2>' + label + '</h2>' +
+              (edit && editChanged(edit.baseline, current) ? '<p role="status">來源或自動摘要已變更，請比對後確認。</p>' +
+                evidence('保存個人修正時的依據', edit.baseline) : '') + evidence('目前自動摘要與來源', current) +
+              '<form method="post">' + formFields(selected.id, field, selected.method.id) + '<label>個人修正<textarea name="text" maxlength="4000">' +
+              escape(edit?.text ?? current.facts.join('\n')) + '</textarea></label><button name="action" value="save">保存修正</button>' +
+              (edit ? '<button name="action" value="restore">還原自動摘要</button>' : '') + '</form></article>';
+          }).join('') : '';
+        return respond(200, page('修正摘要', '<nav>' + managementBack + '</nav><h1>修正摘要</h1>' +
+          '<form method="get"><label>搜尋活動或方法 <input name="q" value="' + escape(query) + '"></label><button>搜尋</button></form>' +
+          (selected ? '' : '<ul>' + methods.filter(({ item, method }) => (item.title + ' ' + method.title).includes(query))
+            .map(({ item, method }) => '<li><a href="/edits?method=' + method.id + '">' + escape(item.title + ' › ' + method.title) + '</a></li>').join('') + '</ul>') +
+          unavailable.map(([id, record]) => '<article><h2>' + escape(record.activity + ' › ' + record.method) +
+            '</h2><p>來源歸屬待確認，已保留個人修正。</p>' + Object.entries(record.fields).map(([field, edit]) =>
+              '<p>' + escape(methodFields[field] + ' · ' + edit.text) + '</p><form method="post">' + formFields(id, field) +
+              '<button name="action" value="restore">移除個人修正</button></form>').join('') + '</article>').join('') + editor));
       }
       if (url.pathname === '/schedule') {
         if (req.method === 'GET') return respond(200, schedulePage(await scheduleState(), enableSchedule));
@@ -1347,7 +1415,7 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
         const summaries = savedMethods?.methods ?? {};
         const preferred = await preferredProvider();
         if (req.method === 'GET' && !methodId) return respond(200, activityDetail(item, now(), summaries, pending, imageRecords, preferred,
-          await readSaved('watches.json') ?? {}));
+          await readSaved('watches.json') ?? {}, await readSaved('manual-edits.json') ?? {}));
         if (req.method === 'POST' && methodId === 'ask') {
           const question = (await formData(req)).get('question')?.trim() ?? '';
           let status = 200;

@@ -6,7 +6,7 @@
 
 **Status:** ready-for-agent
 
-**Completion:** pending
+**Completion:** ready for player acceptance
 
 **Specification:** [正式規格 v1.2](../../../SPEC.md)；US-034、US-035；D1、D4、D8、D11、D14；AC15、AC24。 補充 AC33；D15。
 
@@ -30,3 +30,6 @@
 完成時記錄使用的來源案例、實際操作／驗證結果及尚存限制。涉及真實模型呼叫時，記錄可取得用量；未知量明示未知。前置任務未完成時保持等待，不以 ready-for-agent 標記取代依賴檢查。
 
 ## Comments
+
+- 本機 HTTP 測試由活動方法保存個人步驟，再加上來源更正。活動筆記保留個人文字，管理頁可比對保存當時與目前依據。還原後重新顯示原自動摘要。12 項測試通過。
+- 依活動及方法的穩定 ID 保存個人欄位，暫時無法對應的修正留在管理頁。

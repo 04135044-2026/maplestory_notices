@@ -322,6 +322,10 @@ test('網站保留補充來源，只有明示更正才更新參加期限', async
   await writeFile(join(dir, snapshot), original);
   await writeFile(join(dir, 'activity-source.json'), JSON.stringify({ snapshot }));
   const item = catalogFromSnapshot(original)[0];
+  const method = item.methods.find(method => method.kind === 'method');
+  await writeFile(join(dir, 'activity-methods.json'), JSON.stringify({ methods: { [method.id]: {
+    facts: { steps: [{ text: '已保存的自動步驟', source: method.sourceIds[0] }] },
+  } } }));
   const note = '三眼章魚直火燒烤 活動期間延長至2026/12/08 23:59';
   const supplementary = '三眼章魚直火燒烤 活動日期12/09';
   const officialUrl = 'https://maplestory.beanfun.com/bulletin?bid=83987';
@@ -336,6 +340,13 @@ test('網站保留補充來源，只有明示更正才更新參加期限', async
       body: new URLSearchParams({ activity: item.id, url: officialUrl, field: 'participation', kind, quote, end }),
     });
     const detail = () => fetch(root + '/activities/' + item.id).then(response => response.text());
+    const editorPath = '/edits?method=' + method.id;
+    const editor = () => fetch(root + editorPath).then(response => response.text());
+    const editId = (await editor()).match(/name="id" value="([a-f0-9]{64})"/)[1];
+    const edit = action => fetch(root + '/edits', { method: 'POST', redirect: 'manual',
+      body: new URLSearchParams({ method: method.id, id: editId, field: 'steps', text: '我的核對步驟', action }) });
+    assert.equal((await edit('save')).status, 303);
+    assert.match(await detail(), /個人修正[\s\S]*我的核對步驟/);
     const rewardPage = await fetch(root + '/?' + new URLSearchParams({ q: item.title, type: '外觀與收藏' })).then(response => response.text());
     const rewardId = rewardPage.match(/name="id" value="([a-f0-9]{64})"/)[1];
     for (const id of [item.id, rewardId]) {
@@ -349,6 +360,10 @@ test('網站保留補充來源，只有明示更正才更新參加期限', async
     const updated = await detail();
     assert.match(updated, /進行中[\s\S]*12\/08 23:59[\s\S]*原公告[\s\S]*12\/01/);
     assert.match(updated, /查閱官方更正/);
+    assert.match(await editor(), /保存個人修正時的依據[\s\S]*目前自動摘要與來源/);
+    assert.equal((await edit('restore')).status, 303);
+    assert.match(await detail(), /已保存的自動步驟/);
+    assert.doesNotMatch(await detail(), /我的核對步驟/);
     const watched = await fetch(root + '/watch').then(response => response.text());
     assert.equal((watched.match(/關注項目的來源已更新/g) ?? []).length, 2);
   } finally {
