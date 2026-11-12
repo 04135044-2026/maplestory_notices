@@ -158,6 +158,14 @@ test('從活動入口核對取得方法，Gemini 只收到指定方法的適用�
     assert.match(luckyDetail, /2026\/11\/11/);
     assert.match(luckyDetail, /可能獎勵/);
     assert.match(luckyDetail, /一天1次，一週最多3次/);
+    const chairSearch = new URLSearchParams({ q: '三眼章魚', state: '進行中', type: '外觀與收藏' });
+    const home = await (await fetch(root + '/?' + chairSearch)).text();
+    assert.match(home, /查看取得方式/);
+    assert.match(home, /尚無外觀圖片/);
+    assert.match(home, /來源 · 星夜馬戲團/);
+    assert.doesNotMatch(home, /搖滾音樂節幸運箱/);
+    chairSearch.set('state', '已結束');
+    assert.match(await (await fetch(root + '/?' + chairSearch)).text(), /已收錄的公告 19129.*找不到/);
   } finally {
     if (server.listening) await new Promise(resolve => server.close(resolve));
     await rm(dir, { recursive: true, force: true });

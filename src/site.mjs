@@ -6,6 +6,7 @@ import { catalogFromSnapshot, methodContext, methodFacts, methodFields, summariz
 import { manualActivity, mergeManual, reviewDocument } from './review.mjs';
 import { fetchOfficialImage, imageKey, recognizeImage } from './images.mjs';
 import { activityState, periodText, timeline } from './periods.mjs';
+import { rewardTypes, searchCatalog, statuses } from './search.mjs';
 
 const escape = value => String(value).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]);
 const link = '<a href="' + official + '" target="_blank" rel="noopener noreferrer">查看官方公告 ↗</a>';
@@ -47,13 +48,40 @@ function searchResults(saved, query, now) {
     ' · ' + time.text + '</p><a href="' + href + '">查看取得方式 →</a></article>').join('');
 }
 
-function home(saved, query, now, status, hasSnapshot = Boolean(saved)) {
+function filterOptions(name, values, value, label) {
+  return '<label>' + label + ' <select name="' + name + '"><option value="">全部</option>' +
+    values.map(option => '<option' + (option === value ? ' selected' : '') + '>' + option + '</option>').join('') + '</select></label>';
+}
+
+function catalogResults(items, filters, now, images, saved) {
+  const entries = searchCatalog(items, filters, now, images);
+  if (!entries.length) return '<p>在已收錄的公告 19129 活動及獎勵中找不到符合的結果。</p>';
+  return entries.map(({ item, method: target, reward, state, periods, image }) => {
+    const legacy = saved && reward && item.title === activity && target.title === method;
+    const href = legacy ? '/note?q=' + encodeURIComponent(reward.name) + '#method' :
+      '/activities/' + item.id + (target ? '#' + target.id : '');
+    const title = reward ? reward.name + (reward.quantity ? ' ×' + reward.quantity : '') : target?.title ?? item.title;
+    return '<article><h2><a href="' + href + '">' + escape(title) + '</a></h2>' +
+      (reward ? '<p>' + escape(item.title + ' › ' + target.title) + ' · ' + escape(reward.type) +
+        (reward.group ? ' · ' + escape(reward.group) : '') + (reward.possible ? ' · 可能獎勵' : '') + '</p>' : '') +
+      '<p>' + escape(state) + ' · ' + escape(periodText(periods.participation)) + '</p>' +
+      (state === '仍可領獎' ? '<p>領獎期限 · ' + escape(periodText(periods.claim)) + '</p>' : '') +
+      '<p>來源 · ' + escape(item.pageTitle) + '（19129）</p>' +
+      (image ? '<img loading="lazy" style="max-width:160px" src="/images/' + image + '" alt="' + escape(reward.name) + '">' :
+        reward ? '<p>尚無外觀圖片</p>' : '') +
+      '<p><a href="' + href + '">' + (reward ? '查看取得方式 →' : '查看活動 →') + '</a></p></article>';
+  }).join('');
+}
+
+function home(saved, query, now, status, hasSnapshot = Boolean(saved), listing) {
   return page('新楓之谷公告懶人包', '<h1>新楓之谷公告懶人包</h1><form method="get"><label for="q">搜尋獎勵或活動</label> <input id="q" name="q" value="' +
-    escape(query) + '"> <button>搜尋</button></form>' + searchResults(saved, query, now) +
+    escape(query) + '"> ' + (listing ? filterOptions('state', statuses, listing.filters.status, '活動狀態') + ' ' +
+      filterOptions('type', rewardTypes, listing.filters.type, '獎勵類型') + ' ' : '') +
+    '<button>搜尋</button></form>' + (listing ? catalogResults(listing.items, listing.filters, now, listing.images, saved) : searchResults(saved, query, now)) +
     (hasSnapshot ? '<p><a href="/activities">查看公告 19129 的全部活動</a></p>' : '') +
     '<details' + (status ? ' open' : '') + '><summary>公告管理</summary>' +
     (status ? '<p>' + escape(status) + '</p>' : '') +
-    (saved ? '<p>已保存摘要：' + escape(new Date(saved.capturedAt).toLocaleString('zh-TW', { timeZone: 'Asia/Taipei' })) + '（台灣時間）</p>' : '') +
+    (saved?.capturedAt ? '<p>已保存摘要：' + escape(new Date(saved.capturedAt).toLocaleString('zh-TW', { timeZone: 'Asia/Taipei' })) + '（台灣時間）</p>' : '') +
     (hasSnapshot ? '<p><a href="/review">檢視與調整公告拆分</a></p>' : '') +
     '<form method="post" action="/import"><button>匯入並整理公告 19129</button></form></details>');
 }
@@ -202,6 +230,27 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
     await writeFile(target + '.tmp', value, 'utf8');
     await rename(target + '.tmp', target);
   }
+  async function readCatalog(source) {
+    if (catalogCache?.snapshot !== source.snapshot) {
+      const entry = {
+        snapshot: source.snapshot,
+        items: (async () => {
+          const items = catalogFromSnapshot(await readFile(join(dir, source.snapshot), 'utf8'));
+          await save('activity-catalog.json', JSON.stringify({ snapshot: source.snapshot, items }, null, 2));
+          return items;
+        })(),
+      };
+      catalogCache = entry;
+      entry.items.catch(() => { if (catalogCache === entry) catalogCache = undefined; });
+    }
+    return catalogCache.items;
+  }
+  async function confirmedItems(source) {
+    const manual = await readSaved('manual-split.json');
+    if (!manual) return [];
+    const html = await readFile(join(dir, source.snapshot), 'utf8');
+    return reviewDocument(html).fingerprint === manual.fingerprint ? manual.entries : [];
+  }
   return createServer(async (req, res) => {
     let methodLocked = false;
     const respond = (status, body) => res.writeHead(status, {
@@ -244,8 +293,25 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
       }
       if (req.method === 'GET' && url.pathname === '/') {
         const saved = await readSaved();
-        return respond(200, home(saved, url.searchParams.get('q')?.trim() ?? '', now(), await readSaved('status.json'),
-          Boolean(await readSaved('activity-source.json') ?? saved)));
+        const source = await readSaved('activity-source.json') ?? saved;
+        const query = url.searchParams.get('q')?.trim() ?? '';
+        let listing;
+        if (source) {
+          const confirmed = await confirmedItems(source);
+          let items;
+          try { items = await readCatalog(source); }
+          catch (error) { if (!(error instanceof Problem)) throw error; items = []; }
+          items = mergeManual(items, confirmed);
+          if (items.length) listing = {
+            items, images: await readSaved('official-images.json') ?? {},
+            filters: {
+              query,
+              status: statuses.includes(url.searchParams.get('state')) ? url.searchParams.get('state') : '',
+              type: rewardTypes.includes(url.searchParams.get('type')) ? url.searchParams.get('type') : '',
+            },
+          };
+        }
+        return respond(200, home(saved, query, now(), await readSaved('status.json'), Boolean(source), listing));
       }
       if (req.method === 'GET' && /^\/images\/[a-f0-9]{24}$/.test(url.pathname)) {
         const key = url.pathname.split('/').at(-1);
@@ -299,24 +365,9 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
         }
         const saved = await readSaved('activity-source.json') ?? await readSaved();
         if (!saved) throw new Problem('請先匯入公告 19129。', 404);
-        if (catalogCache?.snapshot !== saved.snapshot) {
-          const entry = {
-            snapshot: saved.snapshot,
-            items: (async () => {
-              const items = catalogFromSnapshot(await readFile(join(dir, saved.snapshot), 'utf8'));
-              await save('activity-catalog.json', JSON.stringify({ snapshot: saved.snapshot, items }, null, 2));
-              return items;
-            })(),
-          };
-          catalogCache = entry;
-          entry.items.catch(() => { if (catalogCache === entry) catalogCache = undefined; });
-        }
-        const pendingItems = catalogCache.items;
         let items;
-        const manual = await readSaved('manual-split.json');
-        const html = manual ? await readFile(join(dir, saved.snapshot), 'utf8') : null;
-        const confirmed = manual && reviewDocument(html).fingerprint === manual.fingerprint ? manual.entries : [];
-        try { items = await pendingItems; }
+        const confirmed = await confirmedItems(saved);
+        try { items = await readCatalog(saved); }
         catch (error) {
           if (!(error instanceof Problem)) throw error;
           if (!confirmed.length) {
