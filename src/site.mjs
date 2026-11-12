@@ -13,7 +13,7 @@ import { activityState, periodText, timeline, versionPeriod } from './periods.mj
 import { activityRewards, rewardTypes, searchCatalog, statuses } from './search.mjs';
 import { watchKey, watchVersion } from './watch.mjs';
 import { editChanged, editEvidence, editKey } from './manual-edits.mjs';
-import { calendarActivity, calendarMonth, exportCalendar, exportVersion } from './calendar.mjs';
+import { calendarActivity, calendarExportChanged, calendarExportRecord, calendarMonth, exportCalendar } from './calendar.mjs';
 import { issueIndex } from './known-issues.mjs';
 import { answerPlayer, compareMethods, playerAssistant, searchWithAgent } from './player-assist.mjs';
 import { announcementUrl, collectAnnouncements, discoveryWindow, officialAnnouncement, officialPages, saveAnnouncement } from './discovery.mjs';
@@ -1108,10 +1108,7 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
         const history = await readSaved('calendar-exports.json') ?? {};
         const filters = { family: params.get('family') ?? '', watched: params.get('watched') === '1',
           day: params.get('day') ?? '', expanded: params.get('expanded') === '1',
-          changed: all.filter(activity => {
-            const previous = history[activity.item.id];
-            return previous && previous.version !== exportVersion(activity, previous.frequencies);
-          }).map(activity => activity.item.title) };
+          changed: all.filter(activity => calendarExportChanged(activity, history[activity.item.id])).map(activity => activity.item.title) };
         const watches = filters.watched ? await readSaved('watches.json') ?? {} : {};
         const activities = all.filter(({ item }) => (!filters.family || familyTitle(item) === filters.family) &&
           (!filters.watched || watches[item.id] || item.methods.filter(method => method.kind === 'method').some(method =>
@@ -1132,7 +1129,7 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
           const frequencies = [...new Set(activity.reminders.map(rule => rule.frequency))].filter(frequency =>
             requestedReminders.has(id + ':' + frequency));
           options[id] = frequencies;
-          currentHistory[id] = { version: exportVersion(activity, frequencies), frequencies, exportedAt: at.toISOString() };
+          currentHistory[id] = calendarExportRecord(activity, frequencies, currentHistory[id], at);
         }
         const file = exportCalendar(selected, at, 'http://' + req.headers.host, options);
         await save('calendar-exports.json', JSON.stringify(currentHistory));
