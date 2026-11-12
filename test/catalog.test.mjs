@@ -48,7 +48,8 @@ test('官方回溯依台北日期跨頁，待確認版本可人工發布，列�
     fetchAnnouncement: async url => ({
       title: url.endsWith('18888') ? '較舊官方活動' : '官方測試公告',
       date: '2026/08/14',
-      html: url.includes('bid=111') ? '<p>三眼章魚直火燒烤</p><p>活動期間照常。</p>' :
+      html: url.includes('bid=111') ? '<p>三眼章魚直火燒烤</p><p>活動期間照常。</p><p>三、已知問題事項</p>' +
+        '<p>1. 三眼章魚直火燒烤的活動介面異常。</p><p>2. 未收錄活動的介面異常。</p>' :
         url.includes('bid=112') ? '<p>皇家美容商品上架。</p>' : '<h2>學院新活動</h2><p>完成指定任務可獲得獎勵。</p>',
     }),
     summarizeActivityMethod: async () => { summaryCalls++; throw new Error('本測試不送模型'); },
@@ -64,6 +65,14 @@ test('官方回溯依台北日期跨頁，待確認版本可人工發布，列�
     assert.match(listing, /2026-08-15 至 2026-11-12[\s\S]*讀取 2 頁/);
     assert.equal((listing.match(/>學院改版<\/a>/g) ?? []).length, 1);
     assert.doesNotMatch(listing, /獨立商城公告|更早公告/);
+    const issues = await get('/issues');
+    assert.match(issues, /三眼章魚直火燒烤的活動介面異常/);
+    assert.match(issues, /未收錄活動的介面異常/);
+    const issueSource = issues.match(/href="(\/issues\/source\/[^"]+)"/)[1];
+    assert.match(await get(issueSource), /已知問題事項/);
+    const chairId = catalogFromSnapshot(html)[0].id;
+    assert.match(await get('/activities/' + chairId), /查看相關問題/);
+    assert.doesNotMatch(await get('/issues?activity=' + chairId), /未收錄活動的介面異常/);
     const version = listing.match(/href="(\/discover\/[a-f0-9]+)">學院改版/)[1];
     const review = await get(version);
     assert.match(review, /公告版型待確認/);

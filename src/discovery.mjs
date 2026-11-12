@@ -148,10 +148,15 @@ export async function saveAnnouncement(candidate, items, fetchAnnouncement, save
   const id = fingerprint(candidate.url).slice(0, 24);
   const snapshot = 'discovered-' + fingerprint([candidate.url, detail.html]) + '.html';
   if (previous?.snapshot !== snapshot) await save(snapshot, detail.html);
+  const previousSnapshots = previous?.previousSnapshots ?? [];
+  const archive = previous?.snapshot && previous.snapshot !== snapshot &&
+    !previousSnapshots.some(entry => entry.snapshot === previous.snapshot);
   return {
     id, url: candidate.url, title, kind, date: candidate.date ?? dateKey(detail.date),
     snapshot, matches, checkedAt: now.toISOString(),
     review: previous?.review,
+    previousSnapshots: archive ? [...previousSnapshots, { snapshot: previous.snapshot, checkedAt: previous.checkedAt,
+      date: previous.date, title: previous.title }] : previousSnapshots,
     existing: candidate.url === official,
   };
 }

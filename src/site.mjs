@@ -13,6 +13,7 @@ import { rewardTypes, searchCatalog, statuses } from './search.mjs';
 import { watchKey, watchVersion } from './watch.mjs';
 import { editChanged, editEvidence, editKey } from './manual-edits.mjs';
 import { calendarActivity, calendarMonth, exportCalendar } from './calendar.mjs';
+import { issueIndex } from './known-issues.mjs';
 import { answerPlayer, compareMethods, playerAssistant, searchWithAgent } from './player-assist.mjs';
 import { announcementUrl, collectAnnouncements, discoveryWindow, officialAnnouncement, officialPages, saveAnnouncement } from './discovery.mjs';
 import { sourceTracking } from './tracking.mjs';
@@ -235,7 +236,8 @@ function catalogResults(entries, saved, watches, back = '/') {
 }
 
 function primaryTabs(active) {
-  return '<nav class="site-tabs" aria-label="主要分頁">' + [['/', '活動與獎勵'], ['/watch', '我的關注'], ['/calendar', '活動日曆'], ['/manage', '公告管理']]
+  return '<nav class="site-tabs" aria-label="主要分頁">' + [['/', '活動與獎勵'], ['/watch', '我的關注'], ['/calendar', '活動日曆'],
+    ['/issues', '已知／修復問題'], ['/manage', '公告管理']]
     .map(([href, label]) => '<a href="' + href + '"' + (href === active ? ' aria-current="page"' : '') + '>' + label + '</a>').join('') + '</nav>';
 }
 
@@ -521,7 +523,7 @@ function comparisonPage(methods, from, selections = [], result, error) {
     (error ? '<p role="alert">' + escape(error) + '</p>' : '') + output);
 }
 
-function activityDetail(item, now, summaries = {}, status = '', imageRecords = {}, provider = 'gemini', watches, edits = {}) {
+function activityDetail(item, now, summaries = {}, status = '', imageRecords = {}, provider = 'gemini', watches, edits = {}, issues = []) {
   const periods = timeline(item);
   const showPeriod = (label, period, field) => {
     const change = period.change;
@@ -611,7 +613,9 @@ function activityDetail(item, now, summaries = {}, status = '', imageRecords = {
   const shared = originalFlow(item.sources, item.images, '活動共用表格與圖片');
   const imageNotes = verifiedImageSources(item, imageRecords);
   return page(item.title, activityNav('/activities', '← 全部活動', item.title, item.officialUrl) + eventLabel(item) + '<h1>' + escape(item.title) + '</h1>' +
-    (watches ? watchButton({ item }, watches, '/activities/' + item.id) : '') + '<p>' +
+    (watches ? watchButton({ item }, watches, '/activities/' + item.id) : '') +
+    (issues.length ? '<p>這個活動有 ' + issues.length + ' 筆官方問題紀錄。 <a href="/issues?activity=' + item.id +
+      '">查看相關問題</a></p>' : '') + '<p>' +
     activityState(periods, now) + ' · <a href="#player-tools">玩家查詢</a></p>' + (status ? '<p role="status">' + escape(status) + '</p>' : '') +
     '<dl><dt>參加資格</dt><dd>' + cite(item.eligibility) +
     (item.sharedEligibility && item.sharedEligibility.text !== item.eligibility?.text
@@ -732,6 +736,21 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
   }
   async function discoveryRegistry() {
     return await readSaved('discovery.json') ?? { entries: {} };
+  }
+  const issueSnapshots = registry => Object.values(registry.entries).filter(notice => notice.kind === 'routine')
+    .flatMap(notice => [notice, ...(notice.previousSnapshots ?? []).filter(entry => entry.snapshot !== notice.snapshot)
+      .map(entry => ({ ...entry, id: notice.id, url: notice.url }))]);
+  let issueCache;
+  async function readIssues(items) {
+    const snapshots = issueSnapshots(await discoveryRegistry());
+    const key = fingerprint([snapshots.map(({ snapshot }) => snapshot), items.map(({ id, title }) => [id, title])]);
+    if (issueCache?.key === key) return issueCache.value;
+    const documents = await Promise.all(snapshots.map(async entry => ({
+      ...entry, html: await readFile(join(dir, entry.snapshot), 'utf8'),
+    })));
+    const value = issueIndex(documents, items);
+    issueCache = { key, value };
+    return value;
   }
   async function discoveredItems() {
     const { entries } = await discoveryRegistry();
@@ -958,6 +977,35 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
         return res.writeHead(200, { 'Content-Type': 'text/calendar; charset=utf-8',
           'Content-Disposition': 'attachment; filename="maplestory-activities.ics"', 'X-Content-Type-Options': 'nosniff' })
           .end(exportCalendar(selected, now(), 'http://' + req.headers.host));
+      }
+      if (req.method === 'GET' && url.pathname === '/issues') {
+        const items = await browsableItems(await readSaved('activity-source.json') ?? await readSaved());
+        const activityId = url.searchParams.get('activity');
+        const item = items.find(item => item.id === activityId);
+        const state = url.searchParams.get('state') ?? '';
+        const labels = { known: '已知問題', fixed: '已修復' };
+        const records = (await readIssues(items)).filter(issue => (!activityId || issue.activities.some(activity => activity.id === activityId)) &&
+          (!Object.hasOwn(labels, state) || issue.state === state));
+        return respond(200, page('已知／修復問題', primaryTabs('/issues') + '<h1>已知／修復問題</h1>' +
+          (item ? '<p><a href="/activities/' + item.id + '">← 回活動筆記</a> · <a href="/issues">查看全部問題</a></p>' : '') +
+          '<form method="get">' + (item ? '<input type="hidden" name="activity" value="' + item.id + '">' : '') +
+          '<label>官方狀態 <select name="state"><option value="">全部</option>' + Object.entries(labels).map(([key, label]) =>
+            '<option value="' + key + '"' + (state === key ? ' selected' : '') + '>' + label + '</option>').join('') +
+          '</select></label> <button>篩選</button></form>' +
+          (records.length ? records.map(issue => '<article id="issue-' + issue.id + '"><h2>' + labels[issue.state] + '</h2><p>' +
+            escape(issue.text) + '</p><p>最近公告 · ' + escape(issue.date ?? '日期未載明') + '</p>' +
+            issue.activities.map(activity => '<p><a href="/activities/' + activity.id + '">' + escape(activity.title) + '</a></p>').join('') +
+            '<details><summary>歷次公告與原文（' + issue.history.length + '）</summary><ul>' + issue.history.map(entry => '<li>' +
+              escape((entry.date ?? '日期未載明') + ' · ' + entry.title + ' · ' + entry.heading) + '<pre>' + escape(entry.text) +
+              '</pre><a href="' + escape(entry.url) + '">官方公告 ↗</a> · <a download href="/issues/source/' + entry.notice +
+              '/' + entry.snapshot + '">下載已保存原文</a></li>').join('') + '</ul></details></article>').join('') : '<p>沒有符合的問題紀錄。</p>')));
+      }
+      if (req.method === 'GET' && /^\/issues\/source\/[a-f0-9]{24}\/discovered-[a-f0-9]{64}\.html$/.test(url.pathname)) {
+        const [, , , id, snapshot] = url.pathname.split('/');
+        const entry = issueSnapshots(await discoveryRegistry()).find(entry => entry.id === id && entry.snapshot === snapshot);
+        if (!entry) throw new Problem('找不到已保存的公告。', 404);
+        return res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8', 'X-Content-Type-Options': 'nosniff',
+          'Content-Disposition': 'attachment; filename="official-notice.txt"' }).end(await readFile(join(dir, snapshot), 'utf8'));
       }
       if (req.method === 'GET' && url.pathname === '/manage') {
         const saved = await readSaved();
@@ -1479,7 +1527,8 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
         const summaries = savedMethods?.methods ?? {};
         const preferred = await preferredProvider();
         if (req.method === 'GET' && !methodId) return respond(200, activityDetail(item, now(), summaries, pending, imageRecords, preferred,
-          await readSaved('watches.json') ?? {}, await readSaved('manual-edits.json') ?? {}));
+          await readSaved('watches.json') ?? {}, await readSaved('manual-edits.json') ?? {},
+          (await readIssues(items)).filter(issue => issue.activities.some(activity => activity.id === item.id))));
         if (req.method === 'POST' && methodId === 'ask') {
           const question = (await formData(req)).get('question')?.trim() ?? '';
           let status = 200;
