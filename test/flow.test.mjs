@@ -63,7 +63,9 @@ test('匯入官方公告後可從首頁搜尋獎勵，重開仍可查看獎勵�
       assert.match(note, /狩獵500隻後從介面領取/);
       assert.match(note, /未載明獨立領獎期限/);
       assert.match(note, /<nav class="activity-nav">[^\n]*>官方公告 ↗<\/a><\/nav>/);
-      assert.equal((note.match(/href="https:\/\/beanfun-event\.beanfun\.com\/EventAD_Mobile\/EventAD\?eventAdId=19129"/g) ?? []).length, 1);
+      const officialLinks = [...note.matchAll(/href="(https:\/\/beanfun-event\.beanfun\.com\/EventAD_Mobile\/EventAD\?eventAdId=19129[^"]*)"/g)];
+      assert.equal(officialLinks.length, 1);
+      assert.equal(decodeURIComponent(new URL(officialLinks[0][1]).hash), '#:~:text=搖滾樂園粉絲俱樂部招募');
       await new Promise(resolve => server.close(resolve));
     }
   } finally {

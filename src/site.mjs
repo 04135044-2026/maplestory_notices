@@ -249,9 +249,10 @@ const isTable = source => Boolean(source?.cells?.length || source?.rows?.length)
 const evidenceLink = source => isTable(source)
   ? ' <a href="#' + source.id + '">查看公告表格</a>' : '';
 
-function activityNav(backHref, backText) {
+function activityNav(backHref, backText, title) {
+  const fragment = encodeURIComponent(title).replaceAll('-', '%2D');
   return '<nav class="activity-nav"><a href="' + backHref + '">' + backText + '</a>' +
-    '<a class="official-button" href="' + official + '" target="_blank" rel="noopener noreferrer">官方公告 ↗</a></nav>';
+    '<a class="official-button" href="' + escape(official + '#:~:text=' + fragment) + '" target="_blank" rel="noopener noreferrer">官方公告 ↗</a></nav>';
 }
 
 function activityDetail(item, now, summaries = {}, status = '', imageRecords = {}) {
@@ -316,7 +317,7 @@ function activityDetail(item, now, summaries = {}, status = '', imageRecords = {
       '<form method="post" action="/activities/' + item.id + '/' + method.id + '"><button>用 Gemini 整理這個方法</button></form></details></article>';
   }).join('');
   const shared = originalFlow(item.sources, item.images, '活動共用表格與圖片');
-  return page(item.title, activityNav('/activities', '← 全部活動') + eventLabel(item) + '<h1>' + escape(item.title) + '</h1><p>' +
+  return page(item.title, activityNav('/activities', '← 全部活動', item.title) + eventLabel(item) + '<h1>' + escape(item.title) + '</h1><p>' +
     activityState(periods, now) + '</p>' + (status ? '<p role="status">' + escape(status) + '</p>' : '') +
     '<dl><dt>參加資格</dt><dd>' + cite(item.eligibility) +
     (item.sharedEligibility && item.sharedEligibility.text !== item.eligibility?.text
@@ -356,7 +357,7 @@ function note(saved, now, query) {
     ? rewards.map(({ name, quantity, level }) =>
       row(fields.reward, level + '（選擇應援時）：' + name + ' ×' + quantity + '／次', notice.table)).join('')
     : fact('reward');
-  return page(activity, activityNav('/?q=' + encodeURIComponent(query ?? notice.reward), '← 回搜尋結果') +
+  return page(activity, activityNav('/?q=' + encodeURIComponent(query ?? notice.reward), '← 回搜尋結果', activity) +
     '<span class="event-label">星夜馬戲團 in 墮落城市</span><h1>' + activity +
     '</h1><p>' + time.status + '</p><dl>' + fact('eligibility') + row('參加期間', time.text, notice.date?.id) +
     row('領獎期限', notice.claim ? '請查看公告所列領取條件' : '此活動段落未載明獨立領獎期限',
