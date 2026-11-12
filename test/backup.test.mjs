@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -38,6 +39,9 @@ test('下載備份還原後重啟，離線仍可查看資料並排除憑證', as
     assert.equal((await restore(base, backup)).status, 303);
     assert.match(await fetch(base + '/watch').then(res => res.text()), /離線關注樣本/);
     assert.equal((await restore(base, { ...backup, files: [...backup.files, { ...backup.files[0], name: '../.env' }] })).status, 422);
+    const malformed = Buffer.from(JSON.stringify({ sample: { version: 'a', frequencies: false } }));
+    assert.equal((await restore(base, { ...backup, files: [...backup.files, { name: 'calendar-exports.json',
+      sha256: createHash('sha256').update(malformed).digest('hex'), data: malformed.toString('base64') }] })).status, 422);
     await stop();
     base = await start(target);
     assert.match(await fetch(base + '/watch').then(res => res.text()), /離線關注樣本/);

@@ -71,11 +71,13 @@ function validateBackup(backup) {
     throw new Problem('備份檔格式或版本無法辨識。');
   }
   const files = new Map();
+  const names = new Set();
   const json = new Map();
   for (const file of backup.files) {
-    if (!supported(file?.name) || files.has(file.name) || typeof file.data !== 'string') {
+    if (!supported(file?.name) || names.has(file.name.toLowerCase()) || typeof file.data !== 'string') {
       throw new Problem('備份包含不支援或重複的檔案。');
     }
+    names.add(file.name.toLowerCase());
     const bytes = Buffer.from(file.data, 'base64');
     if (bytes.toString('base64') !== file.data || digest(bytes) !== file.sha256 ||
         (image.test(file.name) && file.name !== 'image-' + file.sha256)) {
@@ -90,6 +92,27 @@ function validateBackup(backup) {
   const requireFile = (name, pattern) => {
     if (typeof name !== 'string' || !pattern.test(name) || !files.has(name)) throw new Problem('備份缺少所引用的本機檔案。');
   };
+  const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
+  const invalid = name => { throw new Problem('備份資料格式不正確 · ' + name); };
+  for (const [name, value] of json) {
+    if (name === 'status.json') {
+      if (value !== null && typeof value !== 'string') invalid(name);
+    } else if (!(name === 'pending-codex-batch.json' && value === null) && !object(value)) invalid(name);
+  }
+  for (const record of Object.values(json.get('calendar-exports.json') ?? {})) {
+    if (!object(record) || typeof record.version !== 'string' || !Array.isArray(record.frequencies) ||
+        record.frequencies.some(value => !['DAILY', 'WEEKLY'].includes(value))) invalid('calendar-exports.json');
+    if (record.reminderVersions != null && (!object(record.reminderVersions) ||
+        Object.entries(record.reminderVersions).some(([frequency, version]) =>
+          !record.frequencies.includes(frequency) || typeof version !== 'string'))) invalid('calendar-exports.json');
+  }
+  for (const record of Object.values(json.get('watches.json') ?? {})) {
+    if (!object(record) || typeof record.label !== 'string' || typeof record.version !== 'string') invalid('watches.json');
+  }
+  const savedMethods = json.get('activity-methods.json');
+  if (savedMethods && !object(savedMethods.methods)) invalid('activity-methods.json');
+  const discovery = json.get('discovery.json');
+  if (discovery && (!object(discovery.entries) || (discovery.queue != null && !object(discovery.queue)))) invalid('discovery.json');
   const work = [...json.values()];
   while (work.length) {
     const record = work.pop();
@@ -112,7 +135,6 @@ function validateBackup(backup) {
       }
     }
   }
-  const discovery = json.get('discovery.json');
   for (const collection of [discovery?.entries, discovery?.queue]) {
     for (const record of Object.values(collection ?? {})) announcementUrl(record.url);
   }
