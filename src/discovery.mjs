@@ -2,6 +2,7 @@ import { load } from 'cheerio';
 import { Problem, official } from './notice.mjs';
 import { fingerprint } from './incremental.mjs';
 import { reviewDocument } from './review.mjs';
+import { eventTitle } from './event-layout.mjs';
 
 const origin = 'https://maplestory.beanfun.com';
 const eventHosts = new Set(['maplestory-event.beanfun.com', 'beanfun-event.beanfun.com']);
@@ -68,7 +69,7 @@ export async function officialAnnouncement(url) {
   }
   const html = await (await request(url)).text();
   const $ = load(html);
-  const title = $('.content h1').first().text().trim() || $('title').text().trim();
+  const title = eventTitle($) || $('title').text().trim();
   if (!$('body').text().trim() && !$('body img').length) throw new Problem('官網未提供公告正文。', 502);
   return { title, html };
 }

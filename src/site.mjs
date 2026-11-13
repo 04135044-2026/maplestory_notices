@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { activity, extract, fetchNotice, fields, gemini, method, official, Problem, validate } from './notice.mjs';
 import { catalogFromSnapshot, methodContext, methodFacts, methodFields, summarizeMethod, validateMethod } from './catalog.mjs';
 import { manualActivity, mergeManual, reviewDocument } from './review.mjs';
+import { savedEventTitle, reconcileEventReview, splitEventPage } from './event-layout.mjs';
 import { fetchOfficialImage, imageKey, recognizeImage } from './images.mjs';
 import { fingerprint, methodFingerprint, sourceReferences, summaryForDisplay } from './incremental.mjs';
 import { CODEX_MODEL, createCodexGenerator } from './codex.mjs';
@@ -422,6 +423,8 @@ function reviewPage(document, automatic, previous, message, route = '/review', o
     .map(method => '<option value="' + method.id + '">' + escape(item.title + ' › ' + method.title) + '</option>')).join('');
   return page('檢視公告拆分', '<nav>' + managementBack + '</nav><h1>檢視公告拆分</h1>' +
     '<p>' + escape(message) + '</p>' +
+    automatic.flatMap(item => (item.warnings ?? []).filter(warning => item.template === 'beanfun-event-layout-v1')
+      .map(warning => '<p role="status">' + escape(warning) + '</p>')).join('') +
     (previous && previous.fingerprint !== document.fingerprint ? '<p role="status">來源已變更，舊人工歸屬需重新核對。</p>' : '') +
     '<p><a href="' + route + '/source" download>下載完整來源快照</a>' +
     (officialUrl ? ' · <a href="' + escape(officialUrl) + '">官方公告 ↗</a> · <a href="/discover">回公告探索</a>' : '') + '</p>' +
@@ -659,7 +662,7 @@ function activityDetail(item, now, summaries = {}, status = '', imageRecords = {
       '<figcaption>' + escape(record?.appearance || '官方原圖 · 物品對應待確認') + '</figcaption></figure>';
     return '<div id="slot-image-' + key + '">' + figure + '</div>';
   }).join('');
-  const originalFlow = (sources, urls, title) => {
+  const originalFlow = (sources, urls, title, headingIds) => {
     const allowed = new Set(urls.filter(url => !placed.has(url)));
     const at = images => imagesFor((images ?? []).filter(url => allowed.has(url)));
     const body = sources.map(source => {
@@ -668,9 +671,15 @@ function activityDetail(item, now, summaries = {}, status = '', imageRecords = {
         placedTables.add(source.id);
         table = '<div id="' + source.id + '">' + sourceBody(source) + '</div>';
       }
-      return at(source.beforeImages) + table + at(source.images);
+      const prose = headingIds && !isTable(source) && source.text
+        ? headingIds.includes(source.id)
+          ? '<h3 id="' + source.id + '">' + escape(source.text.replace(/^[【〖]|[】〗]$/g, '')) + '</h3>'
+          : '<p id="' + source.id + '">' + escape(source.text) + '</p>'
+        : '';
+      return at(source.beforeImages) + prose + table + at(source.images);
     }).join('');
     if (!body && !allowed.size) return '';
+    if (headingIds) return body + imagesFor([...allowed]);
     return '<details data-source-flow' + ([...allowed].some(isSelected) ? ' open' : '') + '><summary>' +
       title + '</summary>' + body + imagesFor([...allowed]) + '</details>';
   };
@@ -696,18 +705,19 @@ function activityDetail(item, now, summaries = {}, status = '', imageRecords = {
     const procedure = { label: '進行方式', sources: steps ? [steps] : [] };
     const reset = { label: '重置規則', sources: methodPeriods.resets };
     const ownPeriods = [
-      ['參加期間', 'participation'], ['開領時間', 'opening'], ['領獎期限', 'claim'],
+      ['參加期間', 'participation'], ['開領時間', 'opening'], ['領獎期限', 'claim'], ['效果到期', 'effect'],
     ].filter(([, key]) => methodPeriods[key].source?.id !== periods[key].source?.id);
-    return '<article id="' + method.id + '"><h2>' + escape(method.title) + '</h2><dl>' +
-      (ownPeriods.length ? '<dt>方法狀態</dt><dd>' + activityState(methodPeriods, now) + '</dd>' : '') +
+    return '<article id="' + method.id + '"><h2>' + escape(method.title) + '</h2>' +
+      (method.groupTitle ? '<p>' + escape(method.groupTitle) + '</p>' : '') + '<dl>' +
+      (ownPeriods.some(([, key]) => key !== 'effect') ? '<dt>方法狀態</dt><dd>' + activityState(methodPeriods, now) + '</dd>' : '') +
       ownPeriods.map(([label, key]) => showPeriod(label, methodPeriods[key])).join('') +
-      (reset.sources.length ? facts(reset.label, reset.sources) : '') +
+      (method.sectionHeadingIds ? '' : (reset.sources.length ? facts(reset.label, reset.sources) : '') +
       facts(procedure.label, procedure.sources) + facts(rewardLabel, shortRewards, procedure) + facts('重要限制', limits, reset) +
       facts('成本及付費條件', costs) +
-      facts('機率', chances.filter(source => /機率/.test(source.text))) +
+      facts('機率', chances.filter(source => /機率/.test(source.text)))) +
       '</dl>' + originalFlow(methodContext(item, method)
         .filter(source => method.sourceIds.includes(source.id) || item.local.includes(source)), ownImages,
-        '公告表格與圖片') + '<details><summary>摘要整理</summary>' +
+        '公告表格與圖片', method.sectionHeadingIds) + '<details><summary>摘要整理</summary>' +
       (summary || Object.keys(manual).length ? '<dl>' + editableSummary + '</dl>' : '<p>尚未整理這個方法。</p>') +
       '<p><a href="/edits?method=' + method.id + '">修正摘要</a></p>' +
       '<form method="post" action="/activities/' + item.id + '/' + method.id + '"><button>用預設模型整理這個方法</button></form></details></article>';
@@ -726,6 +736,8 @@ function activityDetail(item, now, summaries = {}, status = '', imageRecords = {
     showPeriod('領獎期限', periods.claim, 'claim') + '</dl>' +
     (item.relatedNotices?.length ? '<details><summary>相關官方公告</summary><ul>' + item.relatedNotices.map(notice =>
       '<li><a href="/discover/' + notice.id + '">' + escape(notice.title) + '</a></li>').join('') + '</ul></details>' : '') +
+    (item.template === 'beanfun-event-layout-v1' && item.warnings.length ?
+      '<ul>' + item.warnings.map(warning => '<li>' + escape(warning) + '</li>').join('') + '</ul>' : '') +
     shared + sections + '<div id="verified-image-notes">' + (imageNotes.length ? '<section><h2>已核對的官方圖片文字</h2>' +
     imageNotes.map(source => '<article><h3>' + escape(source.scope) + '</h3><pre>' + escape(source.text) +
       '</pre><details class="image-preview"><summary>預覽官方原圖</summary><img loading="lazy" src="' + source.image +
@@ -847,7 +859,13 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
     });
   }
   async function discoveryRegistry() {
-    return await readSaved('discovery.json') ?? { entries: {} };
+    const registry = await readSaved('discovery.json') ?? { entries: {} };
+    await Promise.all(Object.values(registry.entries).filter(entry => entry.kind === 'version' && entry.title === '新楓之谷')
+      .map(async entry => {
+        const title = savedEventTitle(await readFile(dataPath(entry.snapshot), 'utf8'));
+        if (title) entry.title = title;
+      }));
+    return registry;
   }
   const issueSnapshots = registry => Object.values(registry.entries).filter(notice => notice.kind === 'routine')
     .flatMap(notice => [notice, ...(notice.previousSnapshots ?? []).filter(entry => entry.snapshot !== notice.snapshot)
@@ -866,9 +884,14 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
   }
   async function discoveredItems() {
     const { entries } = await discoveryRegistry();
-    return Object.values(entries).flatMap(entry => mergeManual([], entry.review?.entries ?? []).map(item => ({
-      ...item, discoverySnapshot: entry.review.snapshot,
-    })));
+    const catalogs = await Promise.all(Object.values(entries).filter(entry => entry.kind === 'version').map(async entry => {
+      const manual = entry.review?.snapshot === entry.snapshot ? entry.review.entries : [];
+      const items = entry.existing ? mergeManual([], manual) : entry.review && entry.review.snapshot !== entry.snapshot ?
+        mergeManual([], entry.review.entries) :
+        reconcileEventReview(splitEventPage(await readFile(dataPath(entry.snapshot), 'utf8'), entry), manual);
+      return items.map(item => ({ ...item, discoverySnapshot: entry.review?.snapshot ?? entry.snapshot }));
+    }));
+    return catalogs.flat();
   }
   async function browsableItems(source) {
     const extra = await discoveredItems();
@@ -1292,9 +1315,11 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
         const document = reviewDocument(html);
         const review = entry.review;
         const entries = review?.fingerprint === document.fingerprint ? review.entries : [];
-        const active = mergeManual([], entries);
+        const automatic = entry.existing ? [] : splitEventPage(html, entry);
+        const active = reconcileEventReview(automatic, entries);
         if (req.method === 'GET') return respond(200, reviewPage(document, active, review,
-          entries.length ? '已確認的活動可從活動筆記整理摘要。' : '來源已保存，公告版型待確認。請選取活動與方法內容。',
+          automatic.length ? '已依公告結構拆分，可核對或調整活動與方法。' :
+            entries.length ? '已確認的活動可從活動筆記整理摘要。' : '來源已保存，公告版型待確認。請選取活動與方法內容。',
           '/discover/' + entry.id, entry.url));
         if (req.method !== 'POST' || subpage) throw new Problem('操作不支援。', 405);
         const item = manualActivity(document, await formData(req), active, entry);
