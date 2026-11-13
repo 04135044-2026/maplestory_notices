@@ -3,7 +3,8 @@ import { timeline } from './periods.mjs';
 import { official } from './notice.mjs';
 import { methodContext } from './catalog.mjs';
 
-const labels = { start: '開始', end: '截止', claim: '領獎截止' };
+const labels = { start: '開始', end: '截止', claimOpen: '開始領獎', claim: '領獎截止',
+  effect: '效果到期', makeupOpen: '開始補完', makeupEnd: '補完截止' };
 const day = 86400000;
 const samePoint = (a, b) => a?.date === b?.date && a?.exact === b?.exact;
 const weekdays = '日一二三四五六';
@@ -51,11 +52,26 @@ export function calendarActivity(item) {
       { text: value.participation.change.quote, url: value.participation.change.url } : value.participation.source },
     claim: { point: value.claim.end, source: value.claim.change ?
       { text: value.claim.change.quote, url: value.claim.change.url } : value.claim.source },
+    claimOpen: { point: value.claim.start ?? value.opening.start, source: value.claim.start ? value.claim.source : value.opening.source },
+    effect: { point: value.effect.end, source: value.effect.source },
   });
   const main = periods(base);
-  const dates = Object.entries(main).map(([kind, value]) => ({ kind, ...value }));
+  const dates = Object.entries(main).filter(([kind, value]) => !['claimOpen', 'effect'].includes(kind) || value.point)
+    .map(([kind, value]) => ({ kind, ...value }));
+  const addMakeup = (periods, method) => {
+    for (const rule of periods.makeup) {
+      if (method && base.makeup.some(entry => entry.source.id === rule.source.id)) continue;
+      for (const [kind, point] of [['makeupOpen', rule.start], ['makeupEnd', rule.end]]) {
+        if (point) dates.push({ kind, point, source: rule.source, method });
+      }
+    }
+  };
+  addMakeup(base);
   for (const method of item.methods.filter(method => method.kind === 'method')) {
-    for (const [kind, value] of Object.entries(periods(timeline(item, method)))) {
+    const scoped = timeline(item, method);
+    addMakeup(scoped, method);
+    for (const [kind, value] of Object.entries(periods(scoped))) {
+      if (['claimOpen', 'effect'].includes(kind) && !value.point) continue;
       if (samePoint(main[kind].point, value.point) &&
           (value.point || main[kind].source?.text === value.source?.text)) continue;
       dates.push({ kind, ...value, method });
@@ -138,7 +154,9 @@ export function exportCalendar(activities, now, origin, options = {}) {
       const href = origin + '/activities/' + item.id + (method ? '#' + method.id : '');
       const officialUrl = source?.url ?? item.officialUrl ?? official;
       const description = ['活動筆記 ' + href, '官方來源 ' + officialUrl, source?.text].filter(Boolean).join('\n');
-      lines.push('BEGIN:VEVENT', 'UID:' + fingerprint([item.id, method?.id, kind]).slice(0, 32) + '@maplestory-notices',
+      const identity = [item.id, method?.id, kind];
+      if (kind.startsWith('makeup')) identity.push(source?.id);
+      lines.push('BEGIN:VEVENT', 'UID:' + fingerprint(identity).slice(0, 32) + '@maplestory-notices',
         'DTSTAMP:' + utc(now), 'SUMMARY:' + icsText(label + ' · ' + title), 'DESCRIPTION:' + icsText(description),
         point.exact === null ? 'DTSTART;VALUE=DATE:' + point.date.replaceAll('-', '') : 'DTSTART:' + utc(point.exact), 'END:VEVENT');
     }

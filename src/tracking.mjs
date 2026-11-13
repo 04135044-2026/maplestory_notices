@@ -13,9 +13,12 @@ export function activityTracking(item, now) {
   }
   const participationEnd = Math.max(...periods.map(period => endOfDay(period.participation.end)));
   const claimEnd = Math.max(...periods.flatMap(period => period.claim.end ? [endOfDay(period.claim.end)] : []));
-  const lastEnd = Math.max(participationEnd, claimEnd);
+  const specialEnd = Math.max(...periods.flatMap(period => [period.effect.end,
+    ...period.makeup.map(rule => rule.end)].filter(Boolean).map(endOfDay)));
+  const lastEnd = Math.max(participationEnd, claimEnd, specialEnd);
   if (participationEnd >= +now) return { track: true, reason: '參加期限尚未結束' };
   if (claimEnd >= +now) return { track: true, reason: '領獎期限尚未結束' };
+  if (specialEnd >= +now) return { track: true, reason: '效果或補完期限尚未結束' };
   if (+now - lastEnd < grace) return { track: true, reason: '最後期限結束未滿 30 天' };
   return { track: false, reason: '最後期限已滿 30 天' };
 }
