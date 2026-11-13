@@ -6,7 +6,7 @@
 
 **Status:** ready-for-agent
 
-**Completion:** ready for player acceptance
+**Completion:** done
 
 **Specification:** [正式規格 v1.2](../../../SPEC.md)；US-023、US-025；D3、D4、D9；AC17、AC22。
 

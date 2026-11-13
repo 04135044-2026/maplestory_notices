@@ -6,7 +6,7 @@
 
 **Status:** ready-for-agent
 
-**Verification:** 完整正文比較含定向複核，已通過本組驗收
+**Verification:** 已執行五份來源核對與網站流程檢查，整體驗收待補證
 
 **Specification:** [正式規格 v1.2](../../../SPEC.md)；US-001、US-002、US-003、US-004、US-005、US-006、US-007、US-008、US-009、US-010、US-011、US-012、US-013、US-014、US-015、US-016、US-017、US-018、US-019、US-020、US-021、US-022、US-023、US-024、US-025、US-026、US-027、US-028、US-029、US-030、US-031、US-032、US-033、US-034、US-035、US-036、US-037；D1、D2、D3、D4、D5、D6、D7、D8、D9、D10、D11、D12、D13、D14；AC01、AC02、AC03、AC04、AC05、AC06、AC07、AC08、AC09、AC10、AC11、AC12、AC13、AC14、AC15、AC16、AC17、AC18、AC19、AC20、AC21、AC22、AC23、AC24、AC25、AC26、AC27、AC28、AC29、AC30、AC31。 補充 AC32–AC35；D15。
 
@@ -31,3 +31,5 @@
 完成時記錄使用的來源案例、實際操作／驗證結果及尚存限制。涉及真實模型呼叫時，記錄可取得用量；未知量明示未知。前置任務未完成時保持等待，不以 ready-for-agent 標記取代依賴檢查。
 
 ## Comments
+
+- [2026-11-13 驗收紀錄](../acceptance-20.md)保存官方案例、瀏覽器與 HTTP 驗證、模型結果及待驗收事項。以實測結果為準。
