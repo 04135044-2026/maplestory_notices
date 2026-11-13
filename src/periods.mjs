@@ -1,6 +1,9 @@
 const sourceDate = /(?:(\d{4})\/)?(\d{1,2})\/(\d{1,2})(?:\s+(\d{1,2}):(\d{2}))?/g;
 const taipei = new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Taipei' });
 
+export const isPermanentDateLabel = text => /^活動(?:日期|時間)[：:]\s*永久[。.]?$/.test(text);
+export const phaseDateLabel = /^第[一二三四五六七八九十\d]+波[：:]\s*(?=(?:\d{4}\/)?\d{1,2}\/\d{1,2})/;
+
 function endpoint(match, years, bounds) {
   const [, explicit, month, day, hour, minute] = match;
   const possible = (explicit ? [explicit] : years).flatMap(year => {
@@ -18,13 +21,14 @@ function endpoint(match, years, bounds) {
 
 function range(source, years, bounds) {
   if (!source) return { source };
-  const matches = [...source.text.matchAll(sourceDate)];
+  const text = source.text.replace(/\s*[（(](?:\d{4}\/)?\d{1,2}\/\d{1,2}\s*(?:編輯|更新)[）)]\s*[。.]?$/, '');
+  const matches = [...text.matchAll(sourceDate)];
   const points = matches.map(match => endpoint(match, years, bounds));
   if (points.some(point => !point) || points.length > 2) return { source };
   if (points.length === 2 && points[0].date > points[1].date) return { source };
   const [first, last] = points;
   if (last) return { start: first, end: last, source };
-  if (first && /截止|期限|為止|維護前|維持至|可領取時間.*至|可領取時間.*~/.test(source.text)) return { end: first, source };
+  if (first && /截止|期限|為止|維護前|維持至|持續至|到期|可領取時間.*至|可領取時間.*~/.test(source.text)) return { end: first, source };
   if (first && /開始|開放|開領|維護後|起/.test(source.text)) return { start: first, source };
   return { source };
 }
@@ -46,16 +50,36 @@ export function timeline(item, method) {
   const own = method ? item.sources.filter(source => method.sourceIds.includes(source.id)) : item.local;
   const localDate = own.find(source => /^(?:活動(?:日期|時間)|參加(?:期間|時間|期限)|活動從\d)/.test(
     source.text.replace(/^[^\p{L}\p{N}]+/u, ''))) ?? item.sources.find(source => source.id === method?.dateSourceId);
-  const localClaim = own.find(source => !source.rows && (/^(?:領獎|獎勵領取|領取)(?:期間|時間|期限|截止)/.test(
+  const localClaim = own.find(source => !source.rows && (/^(?:領獎|獎勵領取|領取|(?:排行|排名)獎勵可領取)(?:期間|時間|期限|截止)/.test(
     source.text.replace(/^[^\p{L}\p{N}]+/u, '')) || /可領取時間為|可以領取排名獎勵/.test(source.text)));
-  const effect = own.find(source => !source.rows && /(?:Buff|效果).*維持至/i.test(source.text));
+  const effect = own.find(source => !source.rows && /(?:Buff|效果).*(?:維持至|持續至|到期)/i.test(source.text));
   const localOpen = own.find(source => /^(?:開領|開放領取|獎勵開放領取)|(?:可在|可以在)\d{1,2}\/\d{1,2}維護後領取/.test(source.text));
   const base = method ? timeline(item) : null;
   const date = localDate ?? item.date ?? manualRange;
-  const permanent = /1900\/.*2100\//.test(date?.text ?? '');
+  const permanent = isPermanentDateLabel(date?.text ?? '') || /1900\/.*2100\//.test(date?.text ?? '');
   let participation = permanent ? { source: date, permanent } : date ? range(date, sourceYears, bounds) :
-    item.template === 'beanfun-event-layout-v1' ? shared : { source: date };
-  if (!method && (manualRange || item.template === 'beanfun-event-layout-v1') && date !== version && participation.start && participation.end &&
+    item.template === 'beanfun-event-layout-v1' && !item.noSharedPeriod ? shared : { source: date };
+  if (!method && item.noSharedPeriod && !date) {
+    const transfer = item.sources.find(source => !source.rows &&
+      /\d{4}年\d{1,2}月\d{1,2}日之後.*最後可轉移時間為\d{4}年\d{1,2}月\d{1,2}日/.test(source.text));
+    if (transfer) {
+      participation = { ...range({ ...transfer, text: transfer.text.replace(/(\d{4})年(\d{1,2})月(\d{1,2})日/g, '$1/$2/$3') }, []),
+        source: transfer };
+    }
+  }
+  if (date && own.includes(date) && /^活動(?:日期|時間)[：:]$/.test(date.text)) {
+    const phases = [];
+    for (const source of own.slice(own.indexOf(date) + 1)) {
+      if (!phaseDateLabel.test(source.text)) break;
+      phases.push(range(source, sourceYears, bounds));
+    }
+    if (phases.length && phases.every(phase => phase.start && phase.end)) {
+      const contiguous = phases.every((phase, index) => !index ||
+        Date.parse(phase.start.date) - Date.parse(phases[index - 1].end.date) === 86400000);
+      participation = { source: date, phases, ...(contiguous ? { start: phases[0].start, end: phases.at(-1).end } : {}) };
+    }
+  }
+  if (!method && !participation.phases && (manualRange || item.template === 'beanfun-event-layout-v1') && date !== version && participation.start && participation.end &&
       participation.start.date === shared.start?.date &&
       participation.end?.date === shared.end?.date) participation = shared;
   if (method && !localDate) participation = method.inheritParticipation === false ? {} : base.participation;
@@ -65,6 +89,9 @@ export function timeline(item, method) {
   }
   const outsideParticipation = item.template === 'beanfun-event-layout-v1' && years.length === 1;
   const deadlineBounds = outsideParticipation ? undefined : bounds;
+  const makeup = own.filter(source => !source.rows && /補完|補簽|補領/.test(source.text) &&
+    /\d{1,2}\/\d{1,2}.*(?:維護後|起|開始|截止|為止)/.test(source.text))
+    .map(source => range(source, sourceYears, deadlineBounds));
   const claim = localClaim ? range(localClaim, sourceYears, deadlineBounds) : base?.claim ?? { source: null };
   if (claim.end && !claim.start && /自活動開始|為活動開始/.test(localClaim?.text ?? '') && participation.start) {
     claim.start = participation.start;
@@ -80,6 +107,7 @@ export function timeline(item, method) {
     claim: claim.change ? claim : corrected(claim, localClaim && method ? null : item.changes?.claim),
     opening: localOpen ? range(localOpen, sourceYears, bounds) : base?.opening ?? { source: null },
     effect: range(effect, sourceYears, deadlineBounds),
+    makeup: method ? [...(base.makeup ?? []), ...makeup.filter(rule => !base.makeup.some(entry => entry.source.id === rule.source.id))] : makeup,
     resets: own.filter(source => !source.rows && /初始化|重置/.test(source.text)),
   };
 }
@@ -112,6 +140,7 @@ export function activityState(periods, now) {
 
 export function periodText(period) {
   if (period.permanent) return '常駐活動';
+  if (period.phases) return period.phases.map(phase => phase.source.text.match(phaseDateLabel)[0] + periodText(phase)).join('；');
   if (!period.source) return '公告未載明';
   const points = [period.start, period.end].filter(Boolean);
   if (!points.length) return period.source.text + '（時間待確認）';

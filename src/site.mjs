@@ -6,6 +6,7 @@ import { activity, extract, fetchNotice, fields, gemini, method, official, Probl
 import { catalogFromSnapshot, methodContext, methodFacts, methodFields, summarizeMethod, validateMethod } from './catalog.mjs';
 import { manualActivity, mergeManual, reviewDocument } from './review.mjs';
 import { savedEventTitle, reconcileEventReview, splitEventPage } from './event-layout.mjs';
+import { eligibilityLabel } from './segmentation.mjs';
 import { fetchOfficialImage, imageKey, recognizeImage } from './images.mjs';
 import { fingerprint, methodFingerprint, sourceReferences, summaryForDisplay } from './incremental.mjs';
 import { CODEX_MODEL, createCodexGenerator } from './codex.mjs';
@@ -22,6 +23,7 @@ import { sourceTracking } from './tracking.mjs';
 import { jobFailure, METHOD_BATCH, SOURCE_BATCH, sourceAttempt } from './jobs.mjs';
 import { DEFAULT_SCHEDULE, dueCheck, validSchedule } from './schedule.mjs';
 import { activeDataDirectory, createBackup, readBackupUpload, restoreBackup } from './backup.mjs';
+import { siteAppearance, themeControl } from './site-appearance.mjs';
 
 const escape = value => String(value).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]);
 const link = '<a href="' + official + '" target="_blank" rel="noopener noreferrer">查看官方公告 ↗</a>';
@@ -87,7 +89,10 @@ main:has(.calendar-layout){max-width:82rem}
 .calendar-day:has(.calendar-today-label){z-index:3}
 .calendar-today-label{position:absolute;top:0;left:50%;transform:translate(-50%,-40%);padding:0 .5rem;border-radius:1rem;background:#14532d;color:white;font-size:.78rem;font-weight:700;white-space:nowrap;pointer-events:none}
 `;
-const page = (title, body) => '<!doctype html><html lang="zh-Hant"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>' + escape(title) + '</title><style>' + style + layout + '</style><main>' + body + '</main></html>';
+const page = (title, body) => '<!doctype html><html lang="zh-Hant"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>' + escape(title) +
+  '</title><script src="/theme.js"></script><style>' + style + layout + siteAppearance + '</style>' +
+  '<header class="site-header"><a href="/">🍁 楓之谷公告懶人包</a><label>外觀 <select id="site-theme">' +
+  '<option value="system">跟隨系統</option><option value="light">淺色</option><option value="dark">深色</option></select></label></header><main>' + body + '</main></html>';
 const imageActions = `
 function revealSource(hash) {
   if (!hash) return;
@@ -206,23 +211,117 @@ function filterOptions(name, values, value, label) {
     values.map(option => '<option' + (option === value ? ' selected' : '') + '>' + option + '</option>').join('') + '</select></label>';
 }
 
-const familyTitle = item => item.pageTitle?.trim() || '未分組活動';
+const familyTitle = item => item.pageTitle?.trim() || item.title;
 const familyTone = title => [...title].reduce((total, char) => (total * 31 + char.codePointAt(0)) % 5, 0);
 const familyLabel = item => item.groupTitle ? familyTitle(item) + ' › ' + item.groupTitle : familyTitle(item);
 const eventLabel = item => '<span class="event-label">' + escape(familyLabel(item)) + '</span>';
 
-function activityGroups(entries, itemOf, render) {
+function groupByActivity(entries, itemOf) {
   const groups = new Map();
   for (const entry of entries) {
     const title = familyTitle(itemOf(entry));
     if (!groups.has(title)) groups.set(title, []);
     groups.get(title).push(entry);
   }
-  return [...groups].map(([title, cards]) => {
+  return [...groups];
+}
+
+function activityGroups(entries, itemOf, render) {
+  return groupByActivity(entries, itemOf).map(([title, cards]) => {
     const tone = familyTone(title);
     return '<section class="activity-family" data-tone="' + tone + '"><h2>' + escape(title) +
       '</h2><div class="activity-grid">' + cards.map(render).join('') + '</div></section>';
   }).join('');
+}
+
+const childActivityTitles = {
+  '露希妲的神祕庭園': { '參與方式': '擲骰子', '露希妲的神祕庭園': '擲骰子' },
+  'OVERDRIVE倒數': { 'OVERDRIVE倒數': '倒數計時' },
+};
+
+function childActivities(item) {
+  const titleKey = title => title.normalize('NFKC').replace(/\s/g, '');
+  return item.methods.filter(method => method.kind === 'method').flatMap(method => {
+    const title = childActivityTitles[item.title]?.[method.title] ?? method.title;
+    if (title === '參與方式' || titleKey(title) === titleKey(item.title)) return [];
+    return [{ item, method, title, href: '/activities/' + item.id + '#' + method.id }];
+  });
+}
+
+function specialTimeNotes(item, method) {
+  const periods = timeline(item, method);
+  const notes = [];
+  if (periods.claim.source) notes.push('領獎期間 · ' + periodText(periods.claim));
+  else if (periods.opening.source) notes.push('開領時間 · ' + periodText(periods.opening));
+  if (periods.effect.source) notes.push('效果到期 · ' + periodText(periods.effect));
+  notes.push(...periods.makeup.map(rule => '補完規則 · ' + rule.source.text.replace(/^[^\p{L}\p{N}]+/u, '')));
+  return notes.length ? '<div class="special-time-notes">' + notes.map(note => '<p>' + escape(note) + '</p>').join('') + '</div>' : '';
+}
+
+function homeActivities(entries, now) {
+  const visible = state => state === '進行中' || state === '仍可領獎';
+  const groups = groupByActivity(entries, entry => entry.item).flatMap(([title, children]) => {
+    const states = children.flatMap(({ item, state }) => [state, ...item.methods.filter(method => method.kind === 'method')
+      .map(method => activityState(timeline(item, method), now))]);
+    return states.some(visible) ? [{ title, children }] : [];
+  });
+  const render = ({ title, children }) => {
+    const [first] = children;
+    const direct = children.length === 1 && first.item.title === title;
+    const links = direct ? childActivities(first.item) :
+      children.map(({ item }) => ({ item, href: '/activities/' + item.id, title: item.title }));
+    return '<article data-tone="' + familyTone(title) + '"><h3>' +
+      (direct ? '<a href="/activities/' + first.item.id + '">' + escape(title) + '</a>' : escape(title)) +
+      '</h3>' +
+      (links.length ? '<details><summary>查看 ' + links.length + ' 個子活動</summary><ul>' +
+        links.map(({ item, method, href, title }) => '<li><a href="' + href + '">' + escape(title) + '</a>' +
+          specialTimeNotes(item, method) + '</li>').join('') +
+        '</ul></details>' : direct ? specialTimeNotes(first.item) : '') + '</article>';
+  };
+  const grid = items => '<div class="activity-grid home-grid">' + items.map(render).join('') + '</div>';
+  const today = new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Taipei' }).format(now);
+  const deadlines = entries.flatMap(({ item }) => {
+    const children = childActivities(item);
+    const targets = [{ method: undefined, title: item.title }, ...children];
+    return targets.flatMap(({ method, title }) => {
+      const periods = timeline(item, method);
+      return [['參加截止', periods.participation.end], ['領獎截止', periods.claim.end], ['效果到期', periods.effect.end],
+        ...periods.makeup.map(rule => ['補完截止', rule.end])].flatMap(([label, end]) => {
+        return end && (end.exact === null ? end.date >= today : end.exact > +now)
+          ? [{ item, method, title, label, end }] : [];
+      });
+    });
+  }).sort((a, b) => a.end.date.localeCompare(b.end.date) ||
+      (a.end.exact ?? Infinity) - (b.end.exact ?? Infinity));
+  const groupedDeadlines = new Map();
+  for (const entry of deadlines) {
+    const { item, label, end } = entry;
+    const key = JSON.stringify([familyTitle(item), label, end.date, end.exact]);
+    if (!groupedDeadlines.has(key)) groupedDeadlines.set(key, []);
+    groupedDeadlines.get(key).push(entry);
+  }
+  const clock = new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Taipei', hourCycle: 'h23',
+    hour: '2-digit', minute: '2-digit' });
+  const agenda = deadlines.length ? '<section class="home-deadlines"><h2>近期截止</h2><ul>' +
+    [...groupedDeadlines.values()].map(members => {
+      const { item, label, end } = members[0];
+      const title = familyTitle(item);
+      const href = '/activities/' + item.id;
+      const wholeActivity = members.length === 1 && !members[0].method && item.title === title;
+      const children = members.filter(entry => entry.method || !members.some(other => other.item === entry.item && other.method));
+      const day = end.date.slice(5).replace('-', '/');
+      const exact = end.exact !== null;
+      return '<li><div class="deadline-row">' + (wholeActivity ? '<a href="' + href + '">' + escape(title) + '</a>' :
+        '<strong>' + escape(title) + '</strong>') + '<span>' + label + ' · <time datetime="' +
+        (exact ? new Date(end.exact).toISOString() : end.date) + '">' + day + (exact ? ' ' + clock.format(end.exact) : '') +
+        '</time></span></div>' + (wholeActivity ? '' :
+          '<details><summary>查看 ' + children.length + ' 個子活動</summary><ul>' + children.map(({ item, method, title }) =>
+            '<li><a href="/activities/' + item.id + (method ? '#' + method.id : '') + '">' +
+            escape(title) + '</a>' + specialTimeNotes(item, method) + '</li>').join('') + '</ul></details>') + '</li>';
+    }).join('') +
+    '</ul></section>' : '';
+  return agenda + '<section class="home-activities"><h2>活動一覽(進行中)</h2>' +
+    (groups.length ? grid(groups) : '<p>目前沒有進行中或仍可領獎的活動。</p>') + '</section>';
 }
 
 function watchButton(entry, watches, back) {
@@ -328,10 +427,11 @@ function calendarPage(activities, all, month, today, filters, message, selected 
         escape(title) + (end > last ? ' ›' : ' · 截止') + '</div>';
     }).join('');
     const counts = week.map((day, index) => {
-      const chips = ['start', 'end'].map(kind => {
+      const chips = ['start', 'end', 'claimOpen', 'claim', 'effect', 'makeupOpen', 'makeupEnd'].map(kind => {
         const count = new Set((events.get(day) ?? []).filter(entry => entry.kind === kind).map(entry => entry.item.id)).size;
         return count ? '<a class="calendar-count calendar-count-' + kind + '" href="' + href(month, { day }) + '">' +
-          count + ' 項' + (kind === 'start' ? '開始' : '截止') + '</a>' : '';
+          count + ' 項' + ({ start: '開始', end: '截止', claimOpen: '開始領獎', claim: '領獎截止',
+            effect: '效果到期', makeupOpen: '開始補完', makeupEnd: '補完截止' })[kind] + '</a>' : '';
       }).join('');
       return '<div class="calendar-counts"' + grid(index + 1, countRow) + '>' + chips + '</div>';
     }).join('');
@@ -340,14 +440,15 @@ function calendarPage(activities, all, month, today, filters, message, selected 
         '">' + (filters.expanded ? '收合主活動' : '展開另外 ' + (bands.length - 3) + ' 個主活動') + '</a>' : '');
   }).join('');
   const details = (events.get(selectedDay) ?? []);
-  const detailGroups = ['start', 'end', 'claim'].map(kind => {
+  const detailGroups = ['start', 'end', 'claimOpen', 'claim', 'effect', 'makeupOpen', 'makeupEnd'].map(kind => {
     const entries = details.filter(entry => entry.kind === kind);
     if (!entries.length) return '';
     const groups = [...new Set(entries.map(({ item }) => familyTitle(item)))];
     return '<h3>' + entries[0].label + '</h3>' + groups.map(title => '<h4>' + escape(title) + '</h4><ul>' +
-      entries.filter(({ item }) => familyTitle(item) === title).map(({ item, method }) =>
+      entries.filter(({ item }) => familyTitle(item) === title).map(({ item, method, kind }) =>
         '<li><a href="/activities/' + item.id + (method ? '#' + method.id : '') + '">' +
-        escape(item.title + (method ? ' › ' + method.title : '')) + '</a></li>').join('') + '</ul>').join('');
+        escape(item.title + (method ? ' › ' + method.title : '')) + '</a>' +
+        (kind !== 'start' && kind !== 'end' ? specialTimeNotes(item, method) : '') + '</li>').join('') + '</ul>').join('');
   }).join('');
   const options = activities.map(({ item, dates, reminders }) => {
     const known = dates.filter(entry => entry.point).length;
@@ -401,16 +502,17 @@ function home(saved, query, now, hasSnapshot = Boolean(saved), listing, assist) 
       ((!entry.method || entry.reward) && listing.watches[watchKey(entry)])) : [];
   const back = listing?.back ?? '/';
   const offerAssist = listing && query && (!entries.length || entries.length > 8 || assist);
-  let nameResults = listing ? catalogResults(entries, listing.snapshot === saved?.snapshot ? saved : null, listing.watches, back) :
+  let nameResults = listing && !hasSearch && !assist ? homeActivities(entries, now) :
+    listing ? catalogResults(entries, listing.snapshot === saved?.snapshot ? saved : null, listing.watches, back) :
     searchResults(saved, query, now);
   if (assist) nameResults = entries.length || !assist.matches?.length
     ? '<section><h2>名稱搜尋結果</h2>' + nameResults + '</section>' : '';
-  return page('新楓之谷公告懶人包', primaryTabs('/') + '<h1>新楓之谷公告懶人包</h1><form method="get" action="/"><label for="q">搜尋獎勵或活動</label> <input id="q" name="q" value="' +
+  return page('新楓之谷公告懶人包', primaryTabs('/') + '<h1 class="home-title">活動與獎勵</h1><div class="home-search"><form method="get" action="/"><label for="q">搜尋獎勵或活動</label> <input id="q" name="q" value="' +
     escape(query) + '"> ' + (listing ? filterOptions('state', statuses, listing.filters.status, '活動狀態') + ' ' +
       filterOptions('type', rewardTypes, listing.filters.type, '獎勵類型') + ' <label><input type="checkbox" name="watched" value="1"' +
       (listing.filters.watched ? ' checked' : '') + '>只看關注</label> ' : '') +
     '<button>搜尋</button>' + (offerAssist ? ' <button formmethod="post" formaction="/assist/search">用 Agent 搜尋</button>' : '') +
-    (hasSearch ? '<a class="search-home-link" href="/">回首頁</a>' : '') + '</form>' +
+    (hasSearch ? '<a class="search-home-link" href="/">回首頁</a>' : '') + '</form></div>' +
     (assist ? '<section><h2>Agent 搜尋結果</h2>' + (assist.error ? '<p role="alert">' + escape(assist.error) + '</p>' :
       assist.matches.length ? catalogResults(assist.matches, null, listing?.watches, back) + assistantModel(assist.metadata) :
         '<p>已收錄的活動與獎勵沒有明確符合的結果。</p>') + '</section>' : '') +
@@ -418,11 +520,16 @@ function home(saved, query, now, hasSnapshot = Boolean(saved), listing, assist) 
     (hasSnapshot || listing ? '<p><a href="/activities">查看全部已收錄活動</a></p>' : ''));
 }
 
-function reviewPage(document, automatic, previous, message, route = '/review', officialUrl) {
+function reviewPage(document, automatic, previous, message, route = '/review', officialUrl, analysis = []) {
   const options = automatic.flatMap(item => item.methods.filter(method => method.kind === 'method')
     .map(method => '<option value="' + method.id + '">' + escape(item.title + ' › ' + method.title) + '</option>')).join('');
   return page('檢視公告拆分', '<nav>' + managementBack + '</nav><h1>檢視公告拆分</h1>' +
     '<p>' + escape(message) + '</p>' +
+    (officialUrl && automatic.some(item => item.methods.some(method => method.reviewBoundary)) ?
+      '<form method="post" action="' + route + '/analyze"><input type="hidden" name="fingerprint" value="' +
+      document.fingerprint + '"><button>用 Agent 分析待確認的歸屬</button></form>' : '') +
+    (analysis.length ? '<section><h2>Agent 建議</h2><ul>' + analysis.map(result => '<li>' +
+      escape(result.title + ' · ' + result.decision + ' · ' + result.evidence.join('、')) + '</li>').join('') + '</ul></section>' : '') +
     automatic.flatMap(item => (item.warnings ?? []).filter(warning => item.template === 'beanfun-event-layout-v1')
       .map(warning => '<p role="status">' + escape(warning) + '</p>')).join('') +
     (previous && previous.fingerprint !== document.fingerprint ? '<p role="status">來源已變更，舊人工歸屬需重新核對。</p>' : '') +
@@ -517,15 +624,22 @@ async function formData(req, limit = 100_000) {
 }
 
 function activityList(activities, query, now, pending = '') {
-  const entries = activities.filter(item => !query || item.title.includes(query) || item.methods.some(method => method.title.includes(query)));
-  return page('活動清單', '<nav><a href="/">← 首頁</a></nav><h1>活動清單' +
+  const entries = groupByActivity(activities, item => item).flatMap(([, items]) => items.flatMap(item => {
+    const children = items.length === 1 ? childActivities(item) : [];
+    return children.length ? children : [{ item, title: item.title, href: '/activities/' + item.id }];
+  })).filter(({ item, method, title }) => !query || familyTitle(item).includes(query) || title.includes(query) ||
+    (method ? method.title.includes(query) : item.methods.some(entry => entry.title.includes(query))));
+  return page('活動清單', primaryTabs('/') + '<h1>全部活動' +
     '</h1><p>' + link + '</p>' + (pending ? '<p>' + escape(pending) + ' <a href="/review">檢視來源</a></p>' : '') +
     '<form><label for="q">活動名稱</label> <input id="q" name="q" value="' + escape(query) +
     '"> <button>搜尋</button></form>' +
-    (entries.length ? activityGroups(entries, item => item, item => {
-      const periods = timeline(item);
-      return '<article>' + eventLabel(item) + '<h3><a href="/activities/' + item.id + '">' + escape(item.title) + '</a></h3><p>' +
-        activityState(periods, now) + ' · ' + escape(periodText(periods.participation)) + '</p></article>';
+    (entries.length ? activityGroups(entries, entry => entry.item, ({ item, method, title, href }) => {
+      const periods = timeline(item, method);
+      const group = method?.groupTitle ?? item.groupTitle ?? (method && familyTitle(item) !== item.title ? item.title : undefined);
+      return '<article>' + (group ? '<span class="event-label">' + escape(group) + '</span>' : '') +
+        '<h3><a href="' + href + '">' + escape(title) + '</a></h3><p>' +
+        activityState(periods, now) + ' · ' + escape(periodText(periods.participation)) + '</p>' +
+        specialTimeNotes(item, method) + '</article>';
     }) : '<p>查無符合的活動。</p>'));
 }
 
@@ -628,7 +742,7 @@ function comparisonPage(methods, from, selections = [], result, error) {
     (error ? '<p role="alert">' + escape(error) + '</p>' : '') + output);
 }
 
-function activityDetail(item, now, summaries = {}, status = '', imageRecords = {}, provider = 'gemini', watches, edits = {}, issues = []) {
+function activityDetail(item, now, summaries = {}, status = '', imageRecords = {}, provider = 'gemini', watches, edits = {}, issues = [], movedGroups = []) {
   const periods = timeline(item);
   const showPeriod = (label, period, field) => {
     const change = period.change;
@@ -638,7 +752,8 @@ function activityDetail(item, now, summaries = {}, status = '', imageRecords = {
         '" target="_blank" rel="noopener noreferrer">查閱官方更正 ↗</a></p>'
       : linked.length ? '<p>' + (linked.filter(entry => entry.kind === 'correction').length > 1 ? '官方更正期限有差異，待比對' : '另有來源待比對') +
         ' <a href="/corrections?activity=' + item.id + '">查看來源關聯</a></p>' : '';
-    return '<dt>' + label + '</dt><dd>' + escape(periodText(period)) + (period.source ? evidenceLink(period.source) : '') + evidence + '</dd>';
+    const sources = period.phases?.map(phase => phase.source) ?? (period.source ? [period.source] : []);
+    return '<dt>' + label + '</dt><dd>' + escape(periodText(period)) + sources.map(evidenceLink).join('') + evidence + '</dd>';
   };
   const cite = source => source ? (isTable(source) ? '' : escape(source.text)) +
     evidenceLink(item.sources.find(original => original.id === source.id) ?? source) : '未載明／待確認';
@@ -684,6 +799,9 @@ function activityDetail(item, now, summaries = {}, status = '', imageRecords = {
       title + '</summary>' + body + imagesFor([...allowed]) + '</details>';
   };
   const sections = item.methods.map(method => {
+    const applicableSources = methodContext(item, method);
+    const qualification = applicableSources.find(source => method.sourceIds.includes(source.id) && eligibilityLabel.test(source.text)) ??
+      applicableSources.find(source => method.sharedSourceIds.includes(source.id) && eligibilityLabel.test(source.text));
     if (method.kind === 'reference') return originalFlow(
       methodContext(item, method).filter(source => method.sourceIds.includes(source.id)), method.images,
       '補充說明 · ' + escape(method.title));
@@ -708,9 +826,12 @@ function activityDetail(item, now, summaries = {}, status = '', imageRecords = {
       ['參加期間', 'participation'], ['開領時間', 'opening'], ['領獎期限', 'claim'], ['效果到期', 'effect'],
     ].filter(([, key]) => methodPeriods[key].source?.id !== periods[key].source?.id);
     return '<article id="' + method.id + '"><h2>' + escape(method.title) + '</h2>' +
-      (method.groupTitle ? '<p>' + escape(method.groupTitle) + '</p>' : '') + '<dl>' +
+      (method.groupTitle && method.groupTitle !== method.title ? '<p>' + escape(method.groupTitle) + '</p>' : '') + '<dl>' +
+      (qualification && qualification.id !== item.eligibility?.id ? '<dt>參加資格</dt><dd>' + cite(qualification) + '</dd>' : '') +
       (ownPeriods.some(([, key]) => key !== 'effect') ? '<dt>方法狀態</dt><dd>' + activityState(methodPeriods, now) + '</dd>' : '') +
       ownPeriods.map(([label, key]) => showPeriod(label, methodPeriods[key])).join('') +
+      methodPeriods.makeup.filter(rule => !periods.makeup.some(entry => entry.source.id === rule.source.id))
+        .map(rule => '<dt>補完規則</dt><dd>' + cite(rule.source) + '</dd>').join('') +
       (method.sectionHeadingIds ? '' : (reset.sources.length ? facts(reset.label, reset.sources) : '') +
       facts(procedure.label, procedure.sources) + facts(rewardLabel, shortRewards, procedure) + facts('重要限制', limits, reset) +
       facts('成本及付費條件', costs) +
@@ -733,12 +854,18 @@ function activityDetail(item, now, summaries = {}, status = '', imageRecords = {
     (item.sharedEligibility && item.sharedEligibility.text !== item.eligibility?.text
       ? '</dd><dd>版本共用資格 · ' + cite(item.sharedEligibility) : '') +
     '</dd>' + showPeriod('參加期間', periods.participation, 'participation') + showPeriod('開領時間', periods.opening) +
-    showPeriod('領獎期限', periods.claim, 'claim') + '</dl>' +
+    showPeriod('領獎期限', periods.claim, 'claim') +
+    (periods.effect.source ? showPeriod('效果到期', periods.effect) : '') +
+    periods.makeup.map(rule => '<dt>補完規則</dt><dd>' + cite(rule.source) + '</dd>').join('') + '</dl>' +
     (item.relatedNotices?.length ? '<details><summary>相關官方公告</summary><ul>' + item.relatedNotices.map(notice =>
       '<li><a href="/discover/' + notice.id + '">' + escape(notice.title) + '</a></li>').join('') + '</ul></details>' : '') +
     (item.template === 'beanfun-event-layout-v1' && item.warnings.length ?
       '<ul>' + item.warnings.map(warning => '<li>' + escape(warning) + '</li>').join('') + '</ul>' : '') +
-    shared + sections + '<div id="verified-image-notes">' + (imageNotes.length ? '<section><h2>已核對的官方圖片文字</h2>' +
+    shared + sections + movedGroups.map(group => '<section id="' + group.legacyGroupId + '"><h2><a href="/activities/' +
+      group.id + '">' + escape(group.title) + '</a></h2><ul>' + group.methods.map(method =>
+        '<li id="' + (method.legacyId ?? method.id) + '"><a href="/activities/' + group.id + '#' + method.id + '">' +
+        escape(method.title) + '</a></li>').join('') + '</ul></section>').join('') +
+    '<div id="verified-image-notes">' + (imageNotes.length ? '<section><h2>已核對的官方圖片文字</h2>' +
     imageNotes.map(source => '<article><h3>' + escape(source.scope) + '</h3><pre>' + escape(source.text) +
       '</pre><details class="image-preview"><summary>預覽官方原圖</summary><img loading="lazy" src="' + source.image +
       '" alt="核對用官方原圖"></details></article>').join('') + '</section>' : '') + '</div>' +
@@ -1042,6 +1169,9 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
         throw new Problem('請使用本機網站網址。', 403);
       }
       const url = new URL(req.url, 'http://localhost');
+      if (req.method === 'GET' && url.pathname === '/theme.js') {
+        return res.writeHead(200, { 'Content-Type': 'text/javascript; charset=utf-8', 'X-Content-Type-Options': 'nosniff' }).end(themeControl);
+      }
       if (req.method === 'GET' && url.pathname === '/image-actions.js') {
         return res.writeHead(200, { 'Content-Type': 'text/javascript; charset=utf-8', 'X-Content-Type-Options': 'nosniff' }).end(imageActions);
       }
@@ -1261,7 +1391,7 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
         return res.writeHead(303, { Location: '/schedule' }).end();
       }
       if (['/discover', '/discover/import', '/discover/retry', '/discover/continue', '/discover/removed'].includes(url.pathname) ||
-          /^\/discover\/[a-f0-9]{24}(?:\/source)?$/.test(url.pathname)) {
+          /^\/discover\/[a-f0-9]{24}(?:\/(?:source|analyze))?$/.test(url.pathname)) {
         const registry = await discoveryRegistry();
         const base = await readSaved('activity-source.json') ?? await readSaved();
         const clock = now();
@@ -1317,7 +1447,35 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
         const entries = review?.fingerprint === document.fingerprint ? review.entries : [];
         const automatic = entry.existing ? [] : splitEventPage(html, entry);
         const active = reconcileEventReview(automatic, entries);
-        if (req.method === 'GET') return respond(200, reviewPage(document, active, review,
+        if (req.method === 'POST' && subpage === 'analyze') {
+          const form = await formData(req);
+          if (form.get('fingerprint') !== document.fingerprint) throw new Problem('來源已更新，請重新核對。', 409);
+          const candidates = active.flatMap(item => item.methods.filter(method => method.reviewBoundary).map(method => ({
+            title: method.title === '參與方式' ? item.title : method.title,
+            proposedParent: method.title === '參與方式' ? null : item.title,
+            blocks: item.sources.filter(source => method.sourceIds.includes(source.id) ||
+              item.local.includes(source) || source.scope === '版本共用期間')
+              .map(({ id, text }) => ({ id, text })),
+          })));
+          if (!candidates.length) throw new Problem('沒有待分析的歸屬。');
+          const ask = playerAssistant(await preferredProvider(), codexGenerate, generatePlayerAssistance);
+          const decisions = ['並列', '從屬', '待確認'];
+          const { result } = await ask('核對每個區塊的歸屬，按輸入順序回答。僅可使用該區塊提供的原文 ID。資格或日期不能從其他活動借用。資料不足時選待確認。',
+            { candidates }, { proposals: { type: 'array', items: { type: 'object',
+              properties: { decision: { type: 'string', enum: decisions }, evidence: { type: 'array', items: { type: 'string' } } },
+              required: ['decision', 'evidence'] } } });
+          if (!Array.isArray(result?.proposals) || result.proposals.length !== candidates.length ||
+              !result.proposals.every((proposal, index) => decisions.includes(proposal?.decision) &&
+                Array.isArray(proposal.evidence) && proposal.evidence.length > 0 && proposal.evidence.length <= 8 &&
+                proposal.evidence.every(id => candidates[index].blocks.some(block => block.id === id)))) {
+            throw new Problem('Agent 回傳的歸屬建議或原文依據有誤。', 502);
+          }
+          return respond(200, reviewPage(document, active, review, '請核對建議與原文後保存拆分。',
+            '/discover/' + entry.id, entry.url, result.proposals.map((proposal, index) => ({
+              ...proposal, title: candidates[index].title,
+            }))));
+        }
+        if (req.method === 'GET' && !subpage) return respond(200, reviewPage(document, active, review,
           automatic.length ? '已依公告結構拆分，可核對或調整活動與方法。' :
             entries.length ? '已確認的活動可從活動筆記整理摘要。' : '來源已保存，公告版型待確認。請選取活動與方法內容。',
           '/discover/' + entry.id, entry.url));
@@ -1712,7 +1870,8 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
         const preferred = await preferredProvider();
         if (req.method === 'GET' && !methodId) return respond(200, activityDetail(item, now(), summaries, pending, imageRecords, preferred,
           await readSaved('watches.json') ?? {}, await readSaved('manual-edits.json') ?? {},
-          (await readIssues(items)).filter(issue => issue.activities.some(activity => activity.id === item.id))));
+          (await readIssues(items)).filter(issue => issue.activities.some(activity => activity.id === item.id)),
+          items.filter(group => group.legacyActivityId === item.id)));
         if (req.method === 'POST' && methodId === 'ask') {
           const question = (await formData(req)).get('question')?.trim() ?? '';
           let status = 200;

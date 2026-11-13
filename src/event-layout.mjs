@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { load } from 'cheerio';
+import { isPermanentDateLabel, phaseDateLabel } from './periods.mjs';
 import { dateLabel, eligibilityLabel, noticeMetadata } from './segmentation.mjs';
 import { mergeManual, reviewDocument } from './review.mjs';
 
@@ -9,6 +10,13 @@ const idFor = (prefix, value) => prefix + createHash('sha256').update(value).dig
 const unique = values => [...new Set(values)];
 const confirmedDateAliases = {
   '楓之谷學院': { '維多利亞船艇競賽': '楓之谷競速' },
+};
+const confirmedBodyTitles = {
+  '星夜馬戲團in地球防衛總部': '星夜馬戲團',
+  '挑戰者伺服器第二季': '挑戰者伺服器S2',
+};
+const confirmedPeerGroups = {
+  '維多利亞盃': new Set(['運動會小遊戲', '運動會狩獵支援', '運動會拳擊機']),
 };
 
 function combineGameAndRewards(sections) {
@@ -27,7 +35,11 @@ export function eventTitle($) {
 export const savedEventTitle = html => eventTitle(load(html));
 
 export function reconcileEventReview(items, entries) {
-  const manual = mergeManual([], entries);
+  const manual = mergeManual([], entries.map(entry => {
+    const destination = items.find(item => item.legacyActivityId === entry.id &&
+      item.methods.some(method => method.legacyId === entry.methods[0].id));
+    return destination ? { ...entry, id: destination.id, title: destination.title } : entry;
+  }));
   const matching = (a, b) => comparable(a).replace(/\s/g, '') === comparable(b).replace(/\s/g, '');
   return manual.reduce((catalog, saved) => {
     const target = catalog.find(item => matching(item.title, saved.title));
@@ -42,6 +54,7 @@ export function reconcileEventReview(items, entries) {
       }];
     }
     const sameMethod = (method, previous) => {
+      if (method.legacyId === previous.id) return true;
       if (matching(previous.title, method.title)) return true;
       const overlap = method.sourceIds.filter(id => previous.sourceIds.includes(id)).length;
       return overlap > 0 && overlap >= Math.ceil(method.sourceIds.length / 2) &&
@@ -51,7 +64,7 @@ export function reconcileEventReview(items, entries) {
     const reviewed = saved.methods.map(method => {
       const inferred = target.methods.find(candidate => sameMethod(candidate, method));
       return { groupTitle: inferred?.groupTitle, dateSourceId: inferred?.dateSourceId,
-        inheritParticipation: inferred?.inheritParticipation, ...method };
+        inheritParticipation: inferred?.inheritParticipation, legacyId: inferred?.legacyId, ...method };
     });
     const sources = new Map([...target.sources, ...saved.sources].map(source => [source.id, source]));
     // Keep program scope metadata for periods while retaining every manually selected source.
@@ -89,8 +102,9 @@ export function splitEventPage(html, notice) {
     if (title === undefined) {
       title = eventTitle($);
       const labels = container.children('div').map((_, el) => clean($(el).children('h3').text())).get().filter(Boolean);
-      valid = Boolean(title && labels.length === 3 && /^活動時間[：:]$/.test(labels[0])
-        && comparable(labels[1]) === comparable(title) && labels[2] === '注意事項');
+      valid = Boolean(title && labels.length >= 3 && /^活動時間[：:]$/.test(labels[0])
+        && [title, confirmedBodyTitles[title]].filter(Boolean).some(name => comparable(labels[1]) === comparable(name))
+        && labels.at(-1) === '注意事項' && labels.slice(2, -1).every(name => name === '編輯紀錄'));
     }
     if (!valid) return;
     const pane = $(node).parentsUntil(container).addBack().toArray().find(el => el.parent === container[0]);
@@ -102,6 +116,10 @@ export function splitEventPage(html, notice) {
     }
     if (label === '注意事項') {
       shared.push(...asSources([block], '共用注意事項'));
+      return;
+    }
+    if (label === '編輯紀錄') {
+      shared.push(...asSources([block], '編輯紀錄'));
       return;
     }
     const previous = $(node).prevAll().toArray().find(el => el.tagName === 'hr' || clean($(el).text()));
@@ -119,19 +137,62 @@ export function splitEventPage(html, notice) {
   const [intro, ...named] = sections;
   const qualification = section => section.blocks.find(block => eligibilityLabel.test(block.text));
   const date = section => section.blocks.find(block => dateLabel.test(block.text));
-  const independent = named.filter(section => qualification(section) && date(section));
+  const independent = named.filter(section => {
+    const localDate = date(section);
+    return localDate && (qualification(section) || isPermanentDateLabel(localDate.text));
+  });
   if (!independent.length && !qualification(intro)) return [];
   const pageConditions = intro.blocks.filter(block => dateLabel.test(block.text) || eligibilityLabel.test(block.text));
   const activities = [];
   if (independent.length) {
     let current;
-    for (const section of named) {
-      if (independent.includes(section)) {
-        const local = section.blocks.filter(block => block === section.blocks[0] || block === date(section) || block === qualification(section));
+    let group;
+    let peerGroup;
+    let datedGroup;
+    if (date(intro)) {
+      current = { title, local: pageConditions, sections: [] };
+      activities.push(current);
+    }
+    for (const [index, section] of named.entries()) {
+      const next = named[index + 1];
+      if (section.large) {
+        datedGroup = !date(section) && !qualification(section) && next && !next.large && date(next) ? section.title : undefined;
+        peerGroup = undefined;
+      }
+      const transfer = qualification(section) && section.blocks.some(block =>
+        /最後可轉移時間為\d{4}年/.test(block.text));
+      if (independent.includes(section) || (datedGroup && !section.large && date(section)) || transfer) {
+        group = undefined;
+        const local = section.blocks.filter(block => block === section.blocks[0] || block === date(section) ||
+          block === qualification(section) || phaseDateLabel.test(block.text));
         const body = section.blocks.filter(block => !local.includes(block));
-        current = { title: section.title, local, sections: body.length ? [{ title: '參與方式', blocks: body }] : [] };
+        current = { title: section.title, local, groupTitle: datedGroup, noSharedPeriod: Boolean(transfer),
+          sections: body.length ? [{ title: '參與方式', blocks: body,
+            reviewBoundary: transfer && !date(section) }] : [] };
         activities.push(current);
-      } else if (current) current.sections.push(section);
+      } else if (datedGroup && section.title === datedGroup) {
+        shared.push(...asSources(section.blocks, '活動分組'));
+      } else if (current) {
+        if (confirmedPeerGroups[title]?.has(section.title)) {
+          peerGroup = { title: section.title, local: section.blocks, sections: [], noSharedPeriod: true };
+          current.relatedGroups ??= [];
+          current.relatedGroups.push(peerGroup.title);
+          peerGroup.legacyTitle = current.title;
+          activities.push(peerGroup);
+          continue;
+        }
+        if (peerGroup) {
+          peerGroup.sections.push(section);
+          continue;
+        }
+        if (section.large) {
+          group = section.afterDivider && qualification(section) && next && !next.large && !independent.includes(next)
+            ? section.title : undefined;
+        }
+        if (group === section.title) current.sections.push({ ...section, group, groupOverview: true, keepMethodId: true,
+          reviewBoundary: true });
+        else current.sections.push(group ? { ...section, group, keepMethodId: true } : section);
+      }
       else shared.push(...asSources(section.blocks, '活動歸屬待確認'));
     }
     shared.push(...asSources(intro.blocks, '版本共用條件與說明'));
@@ -160,7 +221,7 @@ export function splitEventPage(html, notice) {
     }
   }
   const seen = new Set();
-  return activities.flatMap(({ title: activityTitle, local, sections }, sourceOrder) => {
+  return activities.flatMap(({ title: activityTitle, local, sections, groupTitle, relatedGroups, legacyTitle, noSharedPeriod }, sourceOrder) => {
     const methods = combineGameAndRewards(sections);
     const id = idFor('beanfun-event-', notice.url + '\n' + activityTitle);
     if (seen.has(id)) return [];
@@ -172,7 +233,7 @@ export function splitEventPage(html, notice) {
     const groups = new Map(methods.filter(section => section.groupOverview).map(section => [section.group, section]));
     const methodsSeen = new Set();
     const scopedMethods = (methods.length ? methods : [{ title: '參與方式', blocks: [] }]).flatMap(section => {
-      const methodId = idFor(id + '-method-', [section.group, section.title].join('\n'));
+      const methodId = idFor(id + '-method-', [section.keepMethodId ? undefined : section.group, section.title].join('\n'));
       if (methodsSeen.has(methodId)) {
         warnings.push('「' + section.title + '」有重複標題，請核對段落 ' + section.blocks.map(block => block.id).join('、') + '。');
         sources.push(...asSources(section.blocks, '活動歸屬待確認'));
@@ -181,8 +242,15 @@ export function splitEventPage(html, notice) {
       methodsSeen.add(methodId);
       const scoped = asSources(section.blocks, section.group ? section.group + ' › ' + section.title : section.title);
       sources.push(...scoped);
+      if (section.reviewBoundary) warnings.push(section.title === '參與方式'
+        ? '「' + activityTitle + '」的日期可能超出公告共用期間，請核對適用範圍。'
+        : '「' + section.title + '」有獨立資格，請核對是否與「' + activityTitle + '」並列。');
       const separateShopUpdate = /商店/.test(section.title) && scoped.some(block => /版本更新後.*新增/.test(block.text));
       const groupBlocks = groups.get(section.group)?.blocks ?? [];
+      const groupEligibility = groupBlocks.find(block => eligibilityLabel.test(block.text));
+      const applicableConditions = groupEligibility ? conditions.filter(block =>
+        block.scope !== localScope || (!eligibilityLabel.test(block.text) && !dateLabel.test(block.text) &&
+          !phaseDateLabel.test(block.text))) : conditions;
       const dateTitle = confirmedDateAliases[title]?.[section.title] ?? section.title;
       const groupDate = groupBlocks.find(block => block.text.startsWith('└') && block.text.includes(dateTitle + '：')
         && /\d+\/\d+.*[~～]/.test(block.text));
@@ -194,19 +262,24 @@ export function splitEventPage(html, notice) {
       return {
         id: methodId, title: section.title, groupTitle: section.group, kind: section.reference || separateShopUpdate ||
           /^關於/.test(section.title) ? 'reference' : 'method',
+        legacyId: legacyTitle && idFor(idFor('beanfun-event-', notice.url + '\n' + legacyTitle) + '-method-', '\n' + section.title),
+        reviewBoundary: section.reviewBoundary,
         sourceIds: scoped.map(block => block.id),
-        sharedSourceIds: separateShopUpdate ? [] : unique([...conditions, ...groupBlocks.filter(block =>
+        sharedSourceIds: separateShopUpdate ? [] : unique([...applicableConditions, ...groupBlocks.filter(block =>
           !block.text.startsWith('└') || !/\d+\/\d+.*[~～]/.test(block.text) || block === groupDate)].map(block => block.id)),
         dateSourceId: groupDate?.id,
         sectionHeadingIds: section.sectionHeadingIds,
-        inheritParticipation: !separateShopUpdate,
+        inheritParticipation: !separateShopUpdate && !groupEligibility,
         images: unique(scoped.flatMap(block => block.images)),
       };
     });
     const byOrder = (a, b) => Number(a.id.slice(1)) - Number(b.id.slice(1));
     sources.sort(byOrder);
     return [{
-      id, title: activityTitle, pageTitle: title, officialUrl: notice.url, sourceOrder,
+      id, title: activityTitle, pageTitle: title, officialUrl: notice.url, sourceOrder, groupTitle, noSharedPeriod,
+      legacyActivityId: legacyTitle && idFor('beanfun-event-', notice.url + '\n' + legacyTitle),
+      legacyGroupId: legacyTitle && idFor(idFor('beanfun-event-', notice.url + '\n' + legacyTitle) + '-method-', '\n' + activityTitle),
+      relatedGroupIds: relatedGroups?.map(name => idFor('beanfun-event-', notice.url + '\n' + name)),
       ...noticeMetadata(html, title), template: 'beanfun-event-layout-v1', sources,
       methods: scopedMethods, local: conditions.filter(block => block.scope === localScope),
       eligibility: qualification({ blocks: local }), date: date({ blocks: local }),
