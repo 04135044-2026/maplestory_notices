@@ -5,7 +5,7 @@ import { tableLayout, tableRows } from './segmentation.mjs';
 
 const hash = value => createHash('sha256').update(value).digest('hex').slice(0, 20);
 const headings = /^(?:h[1-6]|p|table|ul|ol|img)$/;
-export function reviewDocument(html) {
+export function reviewDocument(html, visit = () => {}) {
   const $ = load(html);
   $('script,style,noscript,iframe').remove();
   const root = $('.content, .bulletin_main').first();
@@ -23,8 +23,12 @@ export function reviewDocument(html) {
         return url.protocol === 'https:' && url.hostname === 'tw.hicdn.beanfun.com' ? url.href : null;
       } catch { return null; }
     }).get();
-    if (text || images.length) blocks.push({ id: 'B' + (blocks.length + 1), text, rows, images,
-      cells: rows ? tableLayout($, node) : undefined });
+    if (text || images.length) {
+      const block = { id: 'B' + (blocks.length + 1), text, rows, images,
+        cells: rows ? tableLayout($, node) : undefined };
+      blocks.push(block);
+      visit($, node, block);
+    }
   }
   if (!blocks.length && body.text().trim()) blocks.push({ id: 'B1', text: body.text().trim(), images: [] });
   return { fingerprint: hash(html), blocks };

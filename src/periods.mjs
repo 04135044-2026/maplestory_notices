@@ -10,7 +10,7 @@ function endpoint(match, years, bounds) {
     return inBounds && Number.isFinite(+utc) && utc.toISOString().startsWith(date) ? [date] : [];
   });
   if (possible.length !== 1) return null;
-  const uncertain = /維護[前後]/.test(match.input);
+  const uncertain = /^\s*維護[前後]/.test(match.input.slice(match.index + match[0].length));
   const exact = hour !== undefined && !uncertain && Number(hour) < 24 && Number(minute) < 60
     ? Date.parse(possible[0] + 'T' + hour.padStart(2, '0') + ':' + minute + ':00+08:00') : null;
   return { date: possible[0], exact };
@@ -24,7 +24,7 @@ function range(source, years, bounds) {
   if (points.length === 2 && points[0].date > points[1].date) return { source };
   const [first, last] = points;
   if (last) return { start: first, end: last, source };
-  if (first && /截止|期限|為止|維護前/.test(source.text)) return { end: first, source };
+  if (first && /截止|期限|為止|維護前|維持至|可領取時間.*至|可領取時間.*~/.test(source.text)) return { end: first, source };
   if (first && /開始|開放|開領|維護後|起/.test(source.text)) return { start: first, source };
   return { source };
 }
@@ -45,22 +45,30 @@ export function timeline(item, method) {
   const sourceYears = bounds ? years : [];
   const own = method ? item.sources.filter(source => method.sourceIds.includes(source.id)) : item.local;
   const localDate = own.find(source => /^(?:活動(?:日期|時間)|參加(?:期間|時間|期限)|活動從\d)/.test(
-    source.text.replace(/^[^\p{L}\p{N}]+/u, '')));
-  const localClaim = own.find(source => /^(?:領獎|獎勵領取|領取)(?:期間|時間|期限|截止)/.test(source.text.replace(/^[^\p{L}\p{N}]+/u, '')));
+    source.text.replace(/^[^\p{L}\p{N}]+/u, ''))) ?? item.sources.find(source => source.id === method?.dateSourceId);
+  const localClaim = own.find(source => !source.rows && (/^(?:領獎|獎勵領取|領取)(?:期間|時間|期限|截止)/.test(
+    source.text.replace(/^[^\p{L}\p{N}]+/u, '')) || /可領取時間為|可以領取排名獎勵/.test(source.text)));
+  const effect = own.find(source => !source.rows && /(?:Buff|效果).*維持至/i.test(source.text));
   const localOpen = own.find(source => /^(?:開領|開放領取|獎勵開放領取)|(?:可在|可以在)\d{1,2}\/\d{1,2}維護後領取/.test(source.text));
   const base = method ? timeline(item) : null;
   const date = localDate ?? item.date ?? manualRange;
   const permanent = /1900\/.*2100\//.test(date?.text ?? '');
-  let participation = permanent ? { source: date, permanent } : range(date, sourceYears, bounds);
-  if (!method && manualRange && date !== manualRange && participation.start && participation.end &&
+  let participation = permanent ? { source: date, permanent } : date ? range(date, sourceYears, bounds) :
+    item.template === 'beanfun-event-layout-v1' ? shared : { source: date };
+  if (!method && (manualRange || item.template === 'beanfun-event-layout-v1') && date !== version && participation.start && participation.end &&
       participation.start.date === shared.start?.date &&
       participation.end?.date === shared.end?.date) participation = shared;
-  if (method && !localDate) participation = base.participation;
+  if (method && !localDate) participation = method.inheritParticipation === false ? {} : base.participation;
   if (method && localDate && participation.start && !participation.end && base.participation.end &&
       participation.start.date <= base.participation.end.date && /開始|維護後/.test(localDate.text)) {
     participation = { ...participation, end: base.participation.end };
   }
-  const claim = localClaim ? range(localClaim, sourceYears, bounds) : base?.claim ?? { source: null };
+  const outsideParticipation = item.template === 'beanfun-event-layout-v1' && years.length === 1;
+  const deadlineBounds = outsideParticipation ? undefined : bounds;
+  const claim = localClaim ? range(localClaim, sourceYears, deadlineBounds) : base?.claim ?? { source: null };
+  if (claim.end && !claim.start && /自活動開始|為活動開始/.test(localClaim?.text ?? '') && participation.start) {
+    claim.start = participation.start;
+  }
   const corrected = (period, change) => {
     if (!change) return period;
     const end = endpoint([...change.endText.matchAll(sourceDate)][0], []);
@@ -71,6 +79,7 @@ export function timeline(item, method) {
     participation: method ? participation : corrected(participation, item.changes?.participation),
     claim: claim.change ? claim : corrected(claim, localClaim && method ? null : item.changes?.claim),
     opening: localOpen ? range(localOpen, sourceYears, bounds) : base?.opening ?? { source: null },
+    effect: range(effect, sourceYears, deadlineBounds),
     resets: own.filter(source => !source.rows && /初始化|重置/.test(source.text)),
   };
 }
