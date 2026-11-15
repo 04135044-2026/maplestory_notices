@@ -11,7 +11,7 @@ const marker = '.restored-data';
 const generation = /^[0-9a-f-]{36}$/;
 const records = new Set([
   'activity-catalog.json', 'activity-methods.json', 'activity-source.json', 'calendar-exports.json',
-  'discovery.json', 'jobs.json', 'manual-edits.json', 'manual-split.json', 'model-preferences.json',
+  'discovery.json', 'notice-analysis.json', 'jobs.json', 'manual-edits.json', 'manual-split.json', 'model-preferences.json',
   'official-images.json', 'pending-codex-batch.json', 'schedule.json', 'source-corrections.json',
   'source-update.json', 'status.json', 'summary.json', 'watches.json',
 ]);

@@ -75,7 +75,44 @@ export async function openPostgresStore({ connectionString, namespace = 'maple-d
         [...files].map(([name, bytes]) => [name, createHash('sha256').update(bytes).digest('hex')])
       ))]).then(({ rows }) => Boolean(rows[0]?.identical));
   }
+  let vectorSchema;
+  function prepareVectors() {
+    vectorSchema ??= transaction(async client => {
+      await client.query('SELECT pg_advisory_xact_lock(5507315)');
+      await client.query(`CREATE TABLE IF NOT EXISTS maple_notice_vectors (
+        dataset text NOT NULL, model text NOT NULL, key text NOT NULL, embedding vector NOT NULL,
+        PRIMARY KEY (dataset, model, key)
+      )`);
+    }).catch(error => {
+      vectorSchema = undefined;
+      throw error;
+    });
+    return vectorSchema;
+  }
   return {
+    async vectorSearch(model, entries, query, embed) {
+      await prepareVectors();
+      const target = await dataset();
+      const keys = entries.map(entry => entry.key);
+      const { rows } = await pool.query(`SELECT key FROM maple_notice_vectors
+        WHERE dataset = $1 AND model = $2 AND key = ANY($3::text[]) AND vector_dims(embedding) = $4`,
+      [target, model, keys, query.length]);
+      const existing = new Set(rows.map(row => row.key));
+      const missing = entries.filter(entry => !existing.has(entry.key));
+      for (let offset = 0; offset < missing.length; offset += 24) {
+        const batch = missing.slice(offset, offset + 24);
+        const vectors = await embed(batch.map(entry => entry.text));
+        await pool.query(`INSERT INTO maple_notice_vectors (dataset, model, key, embedding)
+          SELECT $1, $2, item.key, item.value::vector FROM unnest($3::text[], $4::text[]) AS item(key, value)
+          ON CONFLICT (dataset, model, key) DO UPDATE SET embedding = EXCLUDED.embedding`,
+        [target, model, batch.map(entry => entry.key), vectors.map(vector => JSON.stringify(vector))]);
+      }
+      const result = await pool.query(`SELECT key FROM maple_notice_vectors
+        WHERE dataset = $1 AND model = $2 AND key = ANY($3::text[]) AND vector_dims(embedding) = $4
+        ORDER BY embedding <=> $5::vector, key LIMIT 12`,
+      [target, model, keys, query.length, JSON.stringify(query)]);
+      return result.rows.map(row => row.key);
+    },
     async run(action) {
       return request.run(await active(), action);
     },

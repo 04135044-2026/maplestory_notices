@@ -23,6 +23,8 @@ import { announcementUrl, collectAnnouncements, discoveryWindow, officialAnnounc
 import { sourceTracking } from './tracking.mjs';
 import { jobFailure, METHOD_BATCH, SOURCE_BATCH, sourceAttempt } from './jobs.mjs';
 import { DEFAULT_SCHEDULE, dueCheck, validSchedule } from './schedule.mjs';
+import { defaultEmbeddingModel, semanticDocuments, semanticSearch } from './semantic-search.mjs';
+import { analysisFile, analyzedItems, analyzeSnapshot, fieldLabels, primaryNotice, sourceRoute } from './notice-analysis.mjs';
 import { officialImageOrigins, originalBlocks } from './original-source.mjs';
 import { activeDataDirectory, createBackup, readBackupUpload, restoreBackup } from './backup.mjs';
 import { siteAppearance, themeControl } from './site-appearance.mjs';
@@ -498,7 +500,7 @@ function managementPage(saved, status, hasSnapshot) {
     '<form method="post" action="/import"><button>匯入並整理公告 19129</button></form>');
 }
 
-function home(saved, query, now, hasSnapshot = Boolean(saved), listing, assist) {
+function home(saved, query, now, hasSnapshot = Boolean(saved), listing, assist, semanticEnabled = false) {
   const hasSearch = query || listing?.filters.status || listing?.filters.type || listing?.filters.watched;
   const entries = listing ? searchCatalog(listing.items, listing.filters, now, listing.images,
     { includeMethods: listing.filters.watched, claimableRewards: Boolean(query) }).filter(entry => !listing.filters.watched ||
@@ -514,7 +516,7 @@ function home(saved, query, now, hasSnapshot = Boolean(saved), listing, assist) 
     escape(query) + '"> ' + (listing ? filterOptions('state', statuses, listing.filters.status, '活動狀態') + ' ' +
       filterOptions('type', rewardTypes, listing.filters.type, '獎勵類型') + ' <label><input type="checkbox" name="watched" value="1"' +
       (listing.filters.watched ? ' checked' : '') + '>只看關注</label> ' : '') +
-    '<button>搜尋</button>' + (offerAssist ? ' <button formmethod="post" formaction="/assist/search">用 Agent 搜尋</button>' : '') +
+    '<button>搜尋</button>' + (semanticEnabled ? ' <button formmethod="post" formaction="/semantic/search">語意搜尋</button>' : '') + (offerAssist ? ' <button formmethod="post" formaction="/assist/search">用 Agent 搜尋</button>' : '') +
     (hasSearch ? '<a class="search-home-link" href="/">回首頁</a>' : '') + '</form></div>' +
     (assist ? '<section><h2>Agent 搜尋結果</h2>' + (assist.error ? '<p role="alert">' + escape(assist.error) + '</p>' :
       assist.matches.length ? catalogResults(assist.matches, null, listing?.watches, back) + assistantModel(assist.metadata) :
@@ -523,11 +525,11 @@ function home(saved, query, now, hasSnapshot = Boolean(saved), listing, assist) 
     (hasSnapshot || listing ? '<p><a href="/activities">查看全部已收錄活動</a></p>' : ''));
 }
 
-function reviewPage(document, automatic, previous, message, route = '/review', officialUrl, analysis = []) {
+function reviewPage(document, automatic, previous, message, route = '/review', officialUrl, analysis = [], progress = '') {
   const options = automatic.flatMap(item => item.methods.filter(method => method.kind === 'method')
     .map(method => '<option value="' + method.id + '">' + escape(item.title + ' › ' + method.title) + '</option>')).join('');
   return page('檢視公告拆分', '<nav>' + managementBack + '</nav><h1>檢視公告拆分</h1>' +
-    '<p>' + escape(message) + '</p>' +
+    '<p>' + escape(message) + '</p>' + progress +
     (officialUrl && automatic.some(item => item.methods.some(method => method.reviewBoundary)) ?
       '<form method="post" action="' + route + '/analyze"><input type="hidden" name="fingerprint" value="' +
       document.fingerprint + '"><button>用 Agent 分析待確認的歸屬</button></form>' : '') +
@@ -551,7 +553,30 @@ function reviewPage(document, automatic, previous, message, route = '/review', o
     '<button>確認並保存拆分</button></form>');
 }
 
-function originalPage(html, { title, url, route }) {
+function announcementProgress(entry, id = primaryNotice) {
+  if (!entry) return '';
+  const labels = { pending: '公告待分析', done: '分析完成', partial: '整理未完成', failed: '公告分析失敗', obsolete: '公告已有新版' };
+  const previous = (entry.published && entry.published.snapshot !== entry.snapshot) || entry.fallbackSnapshot;
+  return '<p role="status">' + escape(labels[entry.state] ?? '公告待分析') +
+    (previous ? ' · 保留上次活動筆記' : '') + (entry.message ? ' · ' + escape(entry.message) : '') +
+    ' · <a href="/activities">查看活動筆記</a></p>' +
+    (entry.history?.length ? '<details><summary>分析紀錄</summary><ul>' + entry.history.slice().reverse().map(version =>
+      '<li><a href="' + sourceRoute(id, version.snapshot) + '?analysis=1">查看歷史分析</a> · ' + escape(formatTimestamp(version.at)) + '</li>').join('') + '</ul></details>' : '');
+}
+
+function analysisNote(item) {
+  const { announcement } = item;
+  if (!announcement) return '';
+  const cite = source => ' <a href="' + announcement.href + '#' + source + '">核對原文</a>';
+  return '<section><h2>公告整理</h2>' + (announcement.previous || announcement.incomplete ?
+    '<p role="status">' + (announcement.previous ? '新版尚未完成，目前顯示上次活動筆記。' : '整理未完成，請核對原文。') + '</p>' : '') +
+    '<p><a href="' + announcement.href + '">查看完整原文及表格與圖片</a> · 活動依據' + cite(announcement.note.source) + '</p>' +
+    announcement.note.methods.map(method => '<article><h3>' + escape(method.title) + '</h3><p>' + cite(method.source) + '</p><dl>' +
+      method.facts.map(fact => '<dt>' + fieldLabels[fact.kind] + '</dt><dd>' + escape(fact.text) + cite(fact.source) + '</dd>').join('') +
+      '</dl></article>').join('') + '</section>';
+}
+
+function originalPage(html, { title, url, route, download = route + '/source' }) {
   const blocks = originalBlocks(html, url);
   const preview = ({ image, text }) => '<a href="' + escape(image) +
     '"><img loading="lazy" style="max-width:100%;height:auto" src="' + escape(image) + '" alt="' +
@@ -566,8 +591,8 @@ function originalPage(html, { title, url, route }) {
       render(part.children) + '</' + part.tag + '>';
   }).join('');
   return page('官方公告原文', '<nav><a href="' + route + '">← 回公告</a></nav><h1>官方公告原文</h1><p>' +
-    escape(title) + '</p><p><a href="' + escape(url) + '">回官方公告 ↗</a> · <a href="' + route +
-    '/source" download>下載完整來源快照</a></p>' +
+    escape(title) + '</p><p><a href="' + escape(url) + '">回官方公告 ↗</a> · <a href="' + download +
+    '" download>下載完整來源快照</a></p>' +
     (blocks.length ? '<div class="source-panel">' + blocks.map((block, index) => '<article id="' + block.id + '"><a href="#' + block.id +
       '">原文區塊 ' + (index + 1) + '</a>' + (block.image ? '<figure>' + preview(block) +
         (block.text ? '<figcaption>' + escape(block.text) + '</figcaption>' : '') + '</figure>' :
@@ -879,7 +904,7 @@ function activityDetail(item, now, summaries = {}, status = '', imageRecords = {
     (issues.length ? '<p>這個活動有 ' + issues.length + ' 筆官方問題紀錄。 <a href="/issues?activity=' + item.id +
       '">查看相關問題</a></p>' : '') + '<p>' +
     activityState(periods, now) + ' · <a href="#player-tools">玩家查詢</a></p>' + (status ? '<p role="status">' + escape(status) + '</p>' : '') +
-    '<dl><dt>參加資格</dt><dd>' + cite(item.eligibility) +
+    analysisNote(item) + '<dl><dt>參加資格</dt><dd>' + cite(item.eligibility) +
     (item.sharedEligibility && item.sharedEligibility.text !== item.eligibility?.text
       ? '</dd><dd>版本共用資格 · ' + cite(item.sharedEligibility) : '') +
     '</dd>' + showPeriod('參加期間', periods.participation, 'participation') + showPeriod('開領時間', periods.opening) +
@@ -953,7 +978,7 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
   summarizeActivityMethod = summarizeMethod, downloadImage = fetchOfficialImage, summarizeImage = recognizeImage,
   codexGenerate = createCodexGenerator(), fetchLinkedSource = fetchCorrection, generatePlayerAssistance,
   openAnnouncementPages = officialPages, fetchAnnouncement = officialAnnouncement,
-  store, providerFetch = fetch, enableSchedule = false, scheduleInterval = 30000 } = {}) {
+  store, providerFetch = fetch, embeddingFetch = fetch, embeddingModel = defaultEmbeddingModel, analyzeNotice, enableNoticeAnalysis = Boolean(analyzeNotice), enableSchedule = false, scheduleInterval = 30000 } = {}) {
   let importing = false;
   const dataContext = new AsyncLocalStorage();
   let activeDirectory;
@@ -1046,7 +1071,14 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
   }
   async function discoveredItems() {
     const { entries } = await discoveryRegistry();
+    const analysis = await analysisRecords();
     const catalogs = await Promise.all(Object.values(entries).filter(entry => entry.kind === 'version').map(async entry => {
+      const agent = entry.existing ? null : analyzedItems(entry.id, analysis[entry.id]);
+      if (agent) return mergeManual(agent, entry.review?.entries ?? []);
+      const fallback = analysis[entry.id]?.fallbackSnapshot;
+      if (fallback && fallback !== entry.snapshot) {
+        entry = { ...entry, snapshot: fallback };
+      }
       const manual = entry.review?.snapshot === entry.snapshot ? entry.review.entries : [];
       const items = entry.existing ? mergeManual([], manual) : entry.review && entry.review.snapshot !== entry.snapshot ?
         mergeManual([], entry.review.entries) :
@@ -1060,7 +1092,7 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
     if (!source) return applyCorrections(extra);
     const confirmed = await confirmedItems(source);
     let items;
-    try { items = await readCatalog(source); }
+    try { items = await primaryItems(source); }
     catch (error) { if (!(error instanceof Problem)) throw error; items = []; }
     return applyCorrections([...mergeManual(items, confirmed), ...extra]);
   }
@@ -1085,10 +1117,127 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
     return playerAssistant(generatePlayerAssistance && selected !== 'codex'
       ? generatePlayerAssistance : await generator(selected));
   }
+  const analysisRecords = async () => await readSaved(analysisFile) ?? {};
+  let analysisMutation = Promise.resolve();
+  let analysisRunning = false;
+  let stopped = false;
+  async function primaryItems(source) {
+    const records = await analysisRecords();
+    const agent = analyzedItems(primaryNotice, records[primaryNotice]);
+    if (agent) return agent;
+    return readCatalog({ snapshot: records[primaryNotice]?.fallbackSnapshot ?? source.snapshot });
+  }
+  function changeAnalysis(update) {
+    const action = analysisMutation.then(async () => {
+      const records = await analysisRecords();
+      if (await update(records) === false) return;
+      await save(analysisFile, JSON.stringify(records));
+    });
+    analysisMutation = action.catch(() => {});
+    return action;
+  }
+  function requestedAnalysis(entry, previous) {
+    if (!enableNoticeAnalysis) return entry;
+    return { ...entry, analysisRequest: previous?.snapshot === entry.snapshot ? previous.analysisRequest :
+      { previousSnapshot: previous?.snapshot } };
+  }
+  async function recoverAnalysis() {
+    const source = await readSaved('activity-source.json');
+    if (source?.analysisRequest) await enqueueAnalysis(primaryNotice, { ...source, title: '公告 19129', url: official },
+      source.analysisRequest.previousSnapshot);
+    for (const entry of Object.values((await discoveryRegistry()).entries)) {
+      if (!entry.existing && entry.kind === 'version' && entry.analysisRequest) {
+        await enqueueAnalysis(entry.id, entry, entry.analysisRequest.previousSnapshot);
+      }
+    }
+    kickAnalysis();
+  }
+  function resumeAnalysis() {
+    if (enableNoticeAnalysis) void withData(recoverAnalysis).catch(() => {
+      console.error('無法載入待處理的公告分析工作。');
+    });
+  }
+  async function latestAnalysisSnapshot(id) {
+    return id === primaryNotice ? (await readSaved('activity-source.json'))?.snapshot :
+      (await readSaved('discovery.json'))?.entries?.[id]?.snapshot;
+  }
+  async function enqueueAnalysis(id, entry, previousSnapshot) {
+    if (!enableNoticeAnalysis || !entry.snapshot || previousSnapshot === entry.snapshot) return;
+    const settings = await modelSettings();
+    await changeAnalysis(async records => {
+      const previous = records[id];
+      if (await latestAnalysisSnapshot(id) !== entry.snapshot) return false;
+      if (previous?.snapshot === entry.snapshot) return false;
+      records[id] = { ...previous, title: entry.title, url: entry.url, snapshot: entry.snapshot,
+        fallbackSnapshot: previous?.fallbackSnapshot ?? previousSnapshot, state: 'pending',
+        settings, message: undefined, queuedAt: now().toISOString(), history: previous?.history ?? [] };
+    });
+    kickAnalysis();
+  }
+  function kickAnalysis() {
+    if (!enableNoticeAnalysis || analysisRunning || stopped) return;
+    analysisRunning = true;
+    setImmediate(() => {
+      void (async () => {
+        try {
+          while (!stopped && await withData(analyzeNext)) {}
+        } catch {
+          console.error('公告分析工作無法保存，下次啟動時可繼續待處理工作。');
+          return;
+        } finally {
+          analysisRunning = false;
+        }
+        // A source can be queued after the last read and before the worker exits.
+        if (!stopped && await withData(async () => Object.values(await analysisRecords()).some(entry => entry.state === 'pending'))) kickAnalysis();
+      })().catch(() => {});
+    });
+  }
+  async function analyzeNext() {
+    const [next] = Object.entries(await analysisRecords()).filter(([, entry]) => entry.state === 'pending')
+      .sort(([, a], [, b]) => a.queuedAt.localeCompare(b.queuedAt));
+    if (!next) return false;
+    const [id, job] = next;
+    let result;
+    let message;
+    try {
+      const generate = analyzeNotice ?? await generator(job.settings.provider, job.settings);
+      result = await analyzeSnapshot(await readData(job.snapshot, 'utf8'), job, generate);
+    } catch (error) {
+      message = error instanceof Problem ? error.message : '模型服務未能完成工作。';
+    }
+    await changeAnalysis(async records => {
+      const current = records[id];
+      if (!current) return false;
+      const officialSnapshot = await latestAnalysisSnapshot(id);
+      const latest = current.snapshot === job.snapshot && officialSnapshot === job.snapshot;
+      const saved = { snapshot: job.snapshot, ...(result ?? { message }), at: now().toISOString() };
+      if (!latest) {
+        current.history.push(saved);
+        if (current.snapshot === job.snapshot) current.state = 'obsolete';
+        return;
+      }
+      current.state = message ? 'failed' : result.complete ? 'done' : 'partial';
+      current.message = message;
+      if (result && (result.complete || (!current.published && !current.fallbackSnapshot))) {
+        if (current.published) current.history.push(current.published);
+        current.published = saved;
+        delete current.fallbackSnapshot;
+      } else current.history.push(saved);
+    });
+    return true;
+  }
   async function writeJob(id, job) {
     const jobs = await readSaved('jobs.json') ?? {};
     jobs[id] = job;
     await save('jobs.json', JSON.stringify(jobs));
+  }
+  async function semanticSources() {
+    const source = await readSaved('activity-source.json') ?? await readSaved();
+    const registry = await discoveryRegistry();
+    return [
+      ...(source?.snapshot ? [{ id: primaryNotice, snapshot: source.snapshot, title: '公告 19129', url: official }] : []),
+      ...Object.values(registry.entries).filter(entry => !entry.existing).map(({ id, snapshot, title, url }) => ({ id, snapshot, title, url })),
+    ];
   }
   async function discoveryWork(registry, base, clock, { mode, input } = {}) {
     let items = await browsableItems(base);
@@ -1096,19 +1245,32 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
     const persist = () => save('discovery.json', JSON.stringify(registry));
     const importOne = async candidate => {
       const id = fingerprint(candidate.url).slice(0, 24);
-      const entry = await saveAnnouncement(candidate, items, fetchAnnouncement, save, registry.entries[id], clock);
+      let entry = await saveAnnouncement(candidate, items, fetchAnnouncement, save, registry.entries[id], clock);
       if (!entry) return false;
       if (entry.existing) {
+        if (base?.snapshot && entry.snapshot !== base.snapshot &&
+            await readData(entry.snapshot, 'utf8') === await readData(base.snapshot, 'utf8')) entry.snapshot = base.snapshot;
         try {
           catalogFromSnapshot(await readData(entry.snapshot, 'utf8'));
-          await save('activity-source.json', JSON.stringify({ snapshot: entry.snapshot, checkedAt: clock.toISOString() }));
+          await save('activity-source.json', JSON.stringify(requestedAnalysis({ snapshot: entry.snapshot, checkedAt: clock.toISOString() }, base)));
           entry.active = true;
           if (!base) items = await browsableItems({ snapshot: entry.snapshot });
         } catch (error) {
           if (!(error instanceof Problem)) throw error;
         }
       }
+      if (entry.kind === 'version' && !entry.existing) entry = requestedAnalysis(entry, registry.entries[id]);
       registry.entries[id] = entry;
+      if (entry.kind === 'version' || entry.existing) {
+        await persist();
+        if (entry.existing && !entry.active && enableNoticeAnalysis) {
+          await save('activity-source.json', JSON.stringify(requestedAnalysis({ snapshot: entry.snapshot, checkedAt: clock.toISOString() }, base)));
+        }
+        const queuedSource = entry.existing ? await readSaved('activity-source.json') : entry;
+        if (queuedSource?.analysisRequest) {
+          await enqueueAnalysis(entry.existing ? primaryNotice : entry.id, entry, queuedSource.analysisRequest.previousSnapshot);
+        }
+      }
       return true;
     };
     const enqueue = candidate => {
@@ -1248,6 +1410,30 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
         return respond(200, page('活動來源追蹤', '<nav>' + managementBack + '</nav><h1>活動來源追蹤</h1>' +
           (details || '<p>確認活動後即可查看來源追蹤狀態。</p>')));
       }
+      const savedOriginal = /^\/announcement-source\/(primary|[a-f0-9]{24})\/([a-zA-Z0-9-]+\.html)(\/download)?$/.exec(url.pathname);
+      if (req.method === 'GET' && savedOriginal) {
+        const [, id, snapshot, download] = savedOriginal;
+        const entry = (await analysisRecords())[id];
+        const source = id === primaryNotice ? await readSaved('activity-source.json') ?? await readSaved() : (await discoveryRegistry()).entries[id];
+        const permitted = [source?.snapshot, ...(source?.previousSnapshots ?? []).map(value => value.snapshot),
+          entry?.snapshot, entry?.published?.snapshot, ...(entry?.history ?? []).map(value => value.snapshot),
+          entry?.fallbackSnapshot].includes(snapshot);
+        if (!permitted) throw new Problem('找不到這個公告版本。', 404);
+        const html = await readData(snapshot, 'utf8');
+        if (download) return res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8',
+          'Content-Disposition': 'attachment; filename="announcement-source.txt"', 'X-Content-Type-Options': 'nosniff' }).end(html);
+        if (url.searchParams.get('analysis') === '1') {
+          const historical = entry?.history?.findLast(version => version.snapshot === snapshot);
+          if (!historical) throw new Problem('找不到這個歷史分析。', 404);
+          const items = analyzedItems(id, { ...entry, published: historical.notes ? historical : null }) ?? [];
+          return respond(200, page('歷史分析', '<h1>歷史分析</h1><p><a href="' + sourceRoute(id, snapshot) +
+            '">核對當時原文</a></p>' + (historical.message ? '<p>' + escape(historical.message) + '</p>' : '') +
+            items.map(item => '<article><h2>' + escape(item.title) + '</h2>' + analysisNote(item) + '</article>').join('')));
+        }
+        const sourceUrl = entry?.url ?? source?.url ?? official;
+        return respond(200, originalPage(html, { title: entry?.title ?? source?.title ?? '公告 19129', url: sourceUrl,
+          route: id === primaryNotice ? '/updates' : '/discover/' + id, download: sourceRoute(id, snapshot) + '/download' }));
+      }
       if (req.method === 'GET' && url.pathname === '/jobs') {
         return respond(200, jobsPage(await discoveryRegistry(), await readSaved('jobs.json') ?? {}, activeJobId));
       }
@@ -1279,6 +1465,7 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
             currentRoot = restored;
             activeDirectory = Promise.resolve(restored);
           }
+          setImmediate(resumeAnalysis);
           return res.writeHead(303, { Location: '/backup?restored=1' }).end();
         }
         throw new Problem('操作不支援。', 405);
@@ -1491,6 +1678,8 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
         const entry = registry.entries[key];
         if (!entry) throw new Problem('找不到已保存的公告。', 404);
         const html = await readData(entry.snapshot, 'utf8');
+        const analysis = (await analysisRecords())[entry.existing ? primaryNotice : key];
+        const progress = announcementProgress(analysis, entry.existing ? primaryNotice : key);
         if (req.method === 'GET' && subpage === 'source') {
           return res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8',
             'Content-Disposition': 'attachment; filename="announcement-source.txt"', 'X-Content-Type-Options': 'nosniff' }).end(html);
@@ -1505,7 +1694,7 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
             block.activities.map(({ id, title, name }) => '<a href="/activities/' + id + '">' + escape(title ?? name) + '</a> ').join('') + '</article>').join('');
           return respond(200, page(entry.title, '<nav><a href="/discover">← 回公告探索</a></nav><h1>' + escape(entry.title) + '</h1>' +
             '<p><a href="' + escape(entry.url) + '">官方公告 ↗</a> · <a href="/discover/' + entry.id +
-            '/source" download>下載已保存來源</a> · <a href="/discover/' + entry.id + '/original">在網站查看官方公告原文</a></p>' + (entry.active ? '<p><a href="/activities">查看活動</a> · <a href="/review">核對拆分</a></p>' :
+            '/source" download>下載已保存來源</a> · <a href="/discover/' + entry.id + '/original">在網站查看官方公告原文</a></p>' + progress + (entry.active ? '<p><a href="/activities">查看活動</a> · <a href="/review">核對拆分</a></p>' :
             '<p>來源已保存。期限更正可從<a href="/corrections">來源關聯與更正</a>核對。</p>') + evidence));
         }
         const document = reviewDocument(html);
@@ -1544,7 +1733,7 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
         if (req.method === 'GET' && !subpage) return respond(200, reviewPage(document, active, review,
           automatic.length ? '已依公告結構拆分，可核對或調整活動與方法。' :
             entries.length ? '已確認的活動可從活動筆記整理摘要。' : '來源已保存，公告版型待確認。請選取活動與方法內容。',
-          '/discover/' + entry.id, entry.url));
+          '/discover/' + entry.id, entry.url, [], progress));
         if (req.method !== 'POST' || subpage) throw new Problem('操作不支援。', 405);
         const item = manualActivity(document, await formData(req), active, entry);
         entry.review = { snapshot: entry.snapshot, fingerprint: document.fingerprint,
@@ -1563,7 +1752,10 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
           const previous = source ? await readData(source.snapshot, 'utf8') : null;
           const snapshot = previous === html ? source.snapshot : '19129-' + checkedAt.replace(/[:.]/g, '-') + '-' + fingerprint(html).slice(0, 12) + '.html';
           if (previous !== html) await save(snapshot, html);
-          await save('activity-source.json', JSON.stringify({ snapshot, checkedAt }));
+          const updated = requestedAnalysis({ snapshot, checkedAt }, source);
+          await save('activity-source.json', JSON.stringify(updated));
+          if (updated.analysisRequest) await enqueueAnalysis(primaryNotice, { ...updated, url: official, title: '公告 19129' },
+            updated.analysisRequest.previousSnapshot);
           const records = await readSaved('official-images.json') ?? {};
           const changed = [];
           const failed = [];
@@ -1605,6 +1797,7 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
         }
         return respond(200, page('來源與摘要更新', '<nav>' + managementBack + '</nav><h1>來源與摘要更新</h1>' +
           '<p>來源取得 ' + escape(formatTimestamp(source?.checkedAt ?? source?.capturedAt)) + '</p>' +
+          announcementProgress((await analysisRecords())[primaryNotice]) +
           (latest ? '<p>' + (latest.changed ? '來源已更新' : '公告文字未變') + ' · 已變更圖片 ' + latest.images +
             ' 張 · 無法查驗圖片 ' + latest.failed + ' 張</p>' : '') +
           '<form method="post"><button>重新取得官方來源</button></form>' +
@@ -1719,10 +1912,19 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
           const html = await fetchSource();
           if (!html.trim()) throw new Problem('官網回傳空白公告。');
           const capturedAt = now().toISOString();
-          const snapshot = '19129-' + capturedAt.replace(/[:.]/g, '-') + '.html';
+          const oldSource = await readSaved('activity-source.json') ?? await readSaved();
+          const oldHtml = oldSource ? await readData(oldSource.snapshot, 'utf8') : null;
+          const snapshot = enableNoticeAnalysis && oldHtml === html ? oldSource.snapshot :
+            '19129-' + capturedAt.replace(/[:.]/g, '-') + '-' + fingerprint(html).slice(0, 12) + '.html';
           await save(snapshot, html);
           sourceSaved = true;
-          await save('activity-source.json', JSON.stringify({ snapshot, checkedAt: capturedAt }));
+          const updated = requestedAnalysis({ snapshot, checkedAt: capturedAt }, oldSource);
+          await save('activity-source.json', JSON.stringify(updated));
+          if (enableNoticeAnalysis) {
+            if (updated.analysisRequest) await enqueueAnalysis(primaryNotice, { ...updated, url: official, title: '公告 19129' },
+              updated.analysisRequest.previousSnapshot);
+            return res.writeHead(303, { Location: '/updates' }).end();
+          }
           const notice = extract(html);
           const previous = await readSaved();
           const importSettings = await modelSettings();
@@ -1744,6 +1946,32 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
           await save('status.json', JSON.stringify(status));
           return respond(error.status, managementPage(await readSaved(), status, Boolean(await readSaved('activity-source.json'))));
         } finally { importing = false; }
+      }
+      if (req.method === 'POST' && url.pathname === '/semantic/search') {
+        const query = (await formData(req)).get('q')?.trim() ?? '';
+        if (!query || query.length > 500) throw new Problem('請輸入 1–500 字的搜尋句。');
+        let results;
+        let message;
+        try {
+          const sources = await semanticSources();
+          const docs = semanticDocuments(await Promise.all(sources.map(async entry => ({
+            ...entry, html: await readData(entry.snapshot, 'utf8'),
+          }))));
+          results = await semanticSearch(store, docs, query, embeddingModel, embeddingFetch);
+          if (fingerprint(sources) !== fingerprint(await semanticSources())) {
+            throw new Problem('公告剛更新，請重新搜尋。', 409);
+          }
+        } catch (error) {
+          message = '語意搜尋暫不可用。' + (error instanceof Problem ? error.message : '請確認本機 PostgreSQL 已啟用 pgvector。');
+        }
+        return respond(200, page('語意搜尋候選', primaryTabs('/') + '<h1>語意搜尋候選</h1>' +
+          '<form method="post"><label>搜尋問題 <input name="q" value="' + escape(query) +
+          '" maxlength="500" required></label> <button>語意搜尋</button></form><p><a href="/?q=' +
+          encodeURIComponent(query) + '">改用名稱搜尋</a></p>' +
+          (message ? '<p role="status">' + escape(message) + '</p>' : results.length ?
+            '<ol>' + results.map(result => '<li><article><h2>' + escape(result.label) + '</h2><p>' +
+              escape(result.passage) + '</p><a href="' + escape(result.href) + '">核對原文</a></article></li>').join('') + '</ol>' :
+            '<p>目前沒有可供檢索的公告原文。</p>')));
       }
       const agentSearch = req.method === 'POST' && url.pathname === '/assist/search';
       if ((req.method === 'GET' && url.pathname === '/') || agentSearch) {
@@ -1778,7 +2006,7 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
             status = error.status;
           }
         }
-        return respond(status, home(saved, query, now(), Boolean(source), listing, assist));
+        return respond(status, home(saved, query, now(), Boolean(source), listing, assist, Boolean(store?.vectorSearch)));
       }
       if (url.pathname === '/compare' && ['GET', 'POST'].includes(req.method)) {
         const source = await readSaved('activity-source.json') ?? await readSaved();
@@ -1868,7 +2096,7 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
         let previousCatalog;
         let pending = '';
         const confirmed = saved ? await confirmedItems(saved) : [];
-        try { items = saved ? await readCatalog(saved) : []; }
+        try { items = saved ? await primaryItems(saved) : []; }
         catch (error) {
           if (!(error instanceof Problem)) throw error;
           const old = await readSaved('activity-catalog.json');
@@ -2088,6 +2316,10 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
       res.end('本機資料無法開啟。');
     });
   });
+  if (enableNoticeAnalysis) {
+    server.on('listening', resumeAnalysis);
+    server.on('close', () => { stopped = true; });
+  }
   if (enableSchedule) {
     let timer;
     const tick = () => withData(runSchedule).catch(error => console.error('每日排程未能保存狀態：' + error.message));
