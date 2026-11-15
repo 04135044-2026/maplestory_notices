@@ -9,7 +9,8 @@ import { savedEventTitle, reconcileEventReview, splitEventPage } from './event-l
 import { eligibilityLabel } from './segmentation.mjs';
 import { fetchOfficialImage, imageKey, recognizeImage } from './images.mjs';
 import { fingerprint, methodFingerprint, sourceReferences, summaryForDisplay } from './incremental.mjs';
-import { CODEX_MODEL, createCodexGenerator } from './codex.mjs';
+import { createCodexGenerator } from './codex.mjs';
+import { generateWith, isProvider, modelFields, modelName, providerLabels, publicModelSettings } from './model-providers.mjs';
 import { fetchCorrection, officialCorrectionUrl, verifiedSource, withCorrections } from './corrections.mjs';
 import { activityState, periodText, timeline, versionPeriod } from './periods.mjs';
 import { activityRewards, rewardTypes, searchCatalog, statuses } from './search.mjs';
@@ -489,7 +490,8 @@ function managementPage(saved, status, hasSnapshot) {
   return page('公告管理', primaryTabs('/manage') + '<h1>公告管理</h1>' +
     '<nav class="site-tabs" aria-label="公告管理功能">' +
     '<a href="/discover">公告探索</a><a href="/tracking">活動來源追蹤</a><a href="/schedule">每日更新排程</a><a href="/jobs">批次進度與重試</a>' +
-    (hasSnapshot ? '<a href="/review">檢視與調整公告拆分</a><a href="/updates">來源與摘要更新</a><a href="/corrections">來源關聯與更正</a><a href="/edits">修正摘要</a>' : '') + '</nav>' +
+    '<a href="/updates">來源與摘要更新</a>' +
+    (hasSnapshot ? '<a href="/review">檢視與調整公告拆分</a><a href="/corrections">來源關聯與更正</a><a href="/edits">修正摘要</a>' : '') + '</nav>' +
     (status ? '<p role="status">' + escape(status) + '</p>' : '') +
     (saved?.capturedAt ? '<p>已保存摘要 · ' + escape(formatTimestamp(saved.capturedAt)) + '</p>' : '') +
     '<form method="post" action="/import"><button>匯入並整理公告 19129</button></form>');
@@ -579,7 +581,7 @@ function jobsPage(registry, jobs, activeJobId) {
   const detail = job => '<li><strong>' + escape(job.title ?? job.url) + '</strong> · ' + (job.id === activeJobId ? '處理中' : labels[job.state]) +
     (job.label ? ' · ' + escape(job.label) : '') + (job.message ? '<p>' + escape(job.message) + '</p>' : '') +
     (job.attempts ? '<p>本次嘗試 ' + job.attempts + ' 次</p>' : '') +
-    (job.provider ? '<p>模型 · ' + escape(job.provider === 'codex' ? '訂閱 Codex' : 'Gemini') +
+    (job.provider ? '<p>模型 · ' + escape(providerLabels[job.provider] ?? job.provider) +
       ' · 用量 ' + (job.usage ? escape(JSON.stringify(job.usage)) : '未知') + '</p>' : '') +
     (job.url ? '<p><a href="' + escape(job.url) + '">官方來源</a></p>' : '') +
     (job.activity ? '<p><a href="/activities/' + job.activity + '">查看活動</a></p>' : '') +
@@ -708,7 +710,7 @@ function imageNoteEditor(item, record) {
     escape(confirmed?.text ?? record.recognition.text) + '</textarea></label>' +
     '<div><button name="action" value="verify-text">核對並加入活動筆記</button> ' +
     (confirmed ? '<button name="action" value="remove-text">移除已核對文字</button>' : '') + '</div></div>' +
-    (confirmed && record.recognition ? '<details><summary>查看 Gemini 辨識稿</summary><pre>' +
+    (confirmed && record.recognition ? '<details><summary>查看圖片辨識稿</summary><pre>' +
       escape(record.recognition.text) + '</pre></details>' : '') + '</details>';
 }
 
@@ -872,7 +874,7 @@ function activityDetail(item, now, summaries = {}, status = '', imageRecords = {
     '<section id="player-tools"><h2>玩家查詢</h2><div class="player-tools"><a href="/compare?activity=' + item.id +
     '">比較兩種取得方式</a></div><details><summary>問這個活動</summary>' + questionForm(item) + '</details></section>' +
     '<details><summary>用訂閱 Codex 整理本批</summary><p>目前預設：' +
-    (provider === 'codex' ? '訂閱 Codex' : 'Gemini') + '</p><form method="post" action="/activities/' + item.id + '/batch">' +
+    (providerLabels[provider] ?? provider) + '</p><form method="post" action="/activities/' + item.id + '/batch">' +
     item.methods.filter(target => target.kind === 'method').map(target => '<label><input type="checkbox" name="method" value="' +
       target.id + '">' + escape(target.title) + '</label> ').join('') +
     '<button>用訂閱 Codex 整理勾選方法</button></form></details>' +
@@ -890,7 +892,7 @@ function activityDetail(item, now, summaries = {}, status = '', imageRecords = {
         '<form method="post" action="/activities/' + item.id + '/images/' + key + '#image-' + key + '">' +
         '<button name="action" value="download">保存／重試原圖</button> ' +
         '<button name="action" value="' + (selected ? 'remove' : 'select') + '">' + (selected ? '移出' : '選入') + '懶人包</button> ' +
-        (shop ? '' : '<button name="action" value="recognize">Gemini 辨識這張圖</button>' +
+        (shop ? '' : '<button name="action" value="recognize">用預設模型辨識這張圖</button>' +
           '<p><label>已核對的單一獎勵名稱 <input name="appearance" maxlength="100" value="' + escape(record?.appearance || '') +
           '"></label> <button name="action" value="confirm">保存外觀對應</button></p>' + imageNoteEditor(item, record)) + '</form></article>';
     }).join('') + '</details><script src="/image-actions.js" defer></script>');
@@ -924,24 +926,26 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
   summarizeActivityMethod = summarizeMethod, downloadImage = fetchOfficialImage, summarizeImage = recognizeImage,
   codexGenerate = createCodexGenerator(), fetchLinkedSource = fetchCorrection, generatePlayerAssistance,
   openAnnouncementPages = officialPages, fetchAnnouncement = officialAnnouncement,
-  enableSchedule = false, scheduleInterval = 30000 } = {}) {
+  store, providerFetch = fetch, enableSchedule = false, scheduleInterval = 30000 } = {}) {
   let importing = false;
   const dataContext = new AsyncLocalStorage();
   let activeDirectory;
   let currentRoot;
-  const withData = async action => dataContext.run(await (activeDirectory ??= activeDataDirectory(dir).then(path => {
+  const withData = async action => dataContext.run(await (activeDirectory ??= (store ? Promise.resolve(dir) : activeDataDirectory(dir)).then(path => {
     currentRoot = path;
     return path;
   })), action);
   const dataPath = (...parts) => join(dataContext.getStore(), ...parts);
+  const readData = (name, encoding) => store ? store.read(name, encoding) : readFile(dataPath(name), encoding);
   let activeJobId = null;
   let catalogCache;
   async function readSaved(name = 'summary.json') {
-    try { return JSON.parse(await readFile(dataPath(name), 'utf8')); }
+    try { return JSON.parse(await readData(name, 'utf8')); }
     catch (error) { if (error.code !== 'ENOENT') throw error; return null; }
   }
   async function save(name, value) {
     if (dataContext.getStore() !== currentRoot) throw new Problem('資料剛完成還原，請重新操作。', 409);
+    if (store) return store.write(name, value);
     const target = dataPath(name);
     await mkdir(dataPath(), { recursive: true });
     await writeFile(target + '.tmp', value, 'utf8');
@@ -953,7 +957,7 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
       const entry = {
         key,
         items: (async () => {
-          const items = catalogFromSnapshot(await readFile(key, 'utf8'));
+          const items = catalogFromSnapshot(await readData(source.snapshot, 'utf8'));
           await save('activity-catalog.json', JSON.stringify({ snapshot: source.snapshot, items }, null, 2));
           return items;
         })(),
@@ -966,7 +970,7 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
   async function confirmedItems(source) {
     const manual = await readSaved('manual-split.json');
     if (!manual) return [];
-    const html = await readFile(dataPath(source.snapshot), 'utf8');
+    const html = await readData(source.snapshot, 'utf8');
     return reviewDocument(html).fingerprint === manual.fingerprint ? manual.entries : [];
   }
   async function applyCorrections(items) {
@@ -989,7 +993,7 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
     const registry = await readSaved('discovery.json') ?? { entries: {} };
     await Promise.all(Object.values(registry.entries).filter(entry => entry.kind === 'version' && entry.title === '新楓之谷')
       .map(async entry => {
-        const title = savedEventTitle(await readFile(dataPath(entry.snapshot), 'utf8'));
+        const title = savedEventTitle(await readData(entry.snapshot, 'utf8'));
         if (title) entry.title = title;
       }));
     return registry;
@@ -1003,7 +1007,7 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
     const key = fingerprint([dataPath(), snapshots.map(({ snapshot }) => snapshot), items.map(({ id, title }) => [id, title])]);
     if (issueCache?.key === key) return issueCache.value;
     const documents = await Promise.all(snapshots.map(async entry => ({
-      ...entry, html: await readFile(dataPath(entry.snapshot), 'utf8'),
+      ...entry, html: await readData(entry.snapshot, 'utf8'),
     })));
     const value = issueIndex(documents, items);
     issueCache = { key, value };
@@ -1015,7 +1019,7 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
       const manual = entry.review?.snapshot === entry.snapshot ? entry.review.entries : [];
       const items = entry.existing ? mergeManual([], manual) : entry.review && entry.review.snapshot !== entry.snapshot ?
         mergeManual([], entry.review.entries) :
-        reconcileEventReview(splitEventPage(await readFile(dataPath(entry.snapshot), 'utf8'), entry), manual);
+        reconcileEventReview(splitEventPage(await readData(entry.snapshot, 'utf8'), entry), manual);
       return items.map(item => ({ ...item, discoverySnapshot: entry.review?.snapshot ?? entry.snapshot }));
     }));
     return catalogs.flat();
@@ -1029,8 +1033,26 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
     catch (error) { if (!(error instanceof Problem)) throw error; items = []; }
     return applyCorrections([...mergeManual(items, confirmed), ...extra]);
   }
+  const credentialPath = join(dir, 'local-model-credentials.json');
+  async function modelSettings() {
+    return publicModelSettings(await readSaved('model-preferences.json'));
+  }
   async function preferredProvider() {
-    return (await readSaved('model-preferences.json'))?.provider ?? 'gemini';
+    return (await modelSettings()).provider;
+  }
+  async function credentials() {
+    try { return JSON.parse(await readFile(credentialPath, 'utf8')); }
+    catch (error) { if (error.code !== 'ENOENT') throw error; return {}; }
+  }
+  async function generator(provider, settings, testKey) {
+    const preferences = settings ?? await modelSettings();
+    const geminiKey = provider === 'gemini' ? testKey || (await credentials()).geminiKey : undefined;
+    return generateWith(provider, { ...preferences, geminiKey }, codexGenerate, providerFetch);
+  }
+  async function askWith(provider) {
+    const selected = provider ?? await preferredProvider();
+    return playerAssistant(generatePlayerAssistance && selected !== 'codex'
+      ? generatePlayerAssistance : await generator(selected));
   }
   async function writeJob(id, job) {
     const jobs = await readSaved('jobs.json') ?? {};
@@ -1047,7 +1069,7 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
       if (!entry) return false;
       if (entry.existing) {
         try {
-          catalogFromSnapshot(await readFile(dataPath(entry.snapshot), 'utf8'));
+          catalogFromSnapshot(await readData(entry.snapshot, 'utf8'));
           await save('activity-source.json', JSON.stringify({ snapshot: entry.snapshot, checkedAt: clock.toISOString() }));
           entry.active = true;
           if (!base) items = await browsableItems({ snapshot: entry.snapshot });
@@ -1203,17 +1225,19 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
             (url.searchParams.get('restored') === '1' ? '<p role="status">備份已還原，可從各分頁核對保存資料。</p>' : '') +
             '<p><a href="/backup/download">下載本機備份</a></p>' +
             '<p>備份包含官方來源、圖片、摘要、人工拆分與修正、問題來源、關注、日曆匯出紀錄與設定。移到另一環境後請重新設定 API 金鑰與 Codex 登入。</p>' +
+            (store ? '<p>試移轉請使用 PostgreSQL 備份匯入指令，並指定新的資料集。</p>' :
             '<form method="post" enctype="multipart/form-data"><label>選擇備份檔 <input type="file" name="backup" accept=".json,application/json" required></label>' +
             '<p><label><input type="checkbox" name="confirm" value="1" required> 確認切換至備份資料</label></p>' +
-            '<button>還原備份</button></form>'));
+            '<button>還原備份</button></form>')));
         }
         lockModel();
         if (req.method === 'GET' && url.pathname === '/backup/download') {
-          const backup = await createBackup(dataPath(), now());
+          const backup = await (store ? store.createBackup(now()) : createBackup(dataPath(), now()));
           return res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8',
             'Content-Disposition': 'attachment; filename="maplestory-backup.json"', 'Cache-Control': 'no-store' }).end(JSON.stringify(backup));
         }
         if (req.method === 'POST' && url.pathname === '/backup') {
+          if (store) throw new Problem('請使用 PostgreSQL 備份匯入指令建立新的試移轉資料集。', 409);
           const restored = await restoreBackup(dir, await readBackupUpload(req));
           currentRoot = restored;
           activeDirectory = Promise.resolve(restored);
@@ -1317,7 +1341,7 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
         const entry = issueSnapshots(await discoveryRegistry()).find(entry => entry.id === id && entry.snapshot === snapshot);
         if (!entry) throw new Problem('找不到已保存的公告。', 404);
         return res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8', 'X-Content-Type-Options': 'nosniff',
-          'Content-Disposition': 'attachment; filename="official-notice.txt"' }).end(await readFile(dataPath(snapshot), 'utf8'));
+          'Content-Disposition': 'attachment; filename="official-notice.txt"' }).end(await readData(snapshot, 'utf8'));
       }
       if (req.method === 'GET' && url.pathname === '/manage') {
         const saved = await readSaved();
@@ -1428,7 +1452,7 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
         }
         const entry = registry.entries[key];
         if (!entry) throw new Problem('找不到已保存的公告。', 404);
-        const html = await readFile(dataPath(entry.snapshot), 'utf8');
+        const html = await readData(entry.snapshot, 'utf8');
         if (req.method === 'GET' && subpage === 'source') {
           return res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8',
             'Content-Disposition': 'attachment; filename="announcement-source.txt"', 'X-Content-Type-Options': 'nosniff' }).end(html);
@@ -1458,7 +1482,7 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
               .map(({ id, text }) => ({ id, text })),
           })));
           if (!candidates.length) throw new Problem('沒有待分析的歸屬。');
-          const ask = playerAssistant(await preferredProvider(), codexGenerate, generatePlayerAssistance);
+          const ask = await askWith();
           const decisions = ['並列', '從屬', '待確認'];
           const { result } = await ask('核對每個區塊的歸屬，按輸入順序回答。僅可使用該區塊提供的原文 ID。資格或日期不能從其他活動借用。資料不足時選待確認。',
             { candidates }, { proposals: { type: 'array', items: { type: 'object',
@@ -1494,7 +1518,7 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
           const html = await fetchSource();
           if (!html.trim()) throw new Problem('官網回傳空白公告。');
           const checkedAt = now().toISOString();
-          const previous = source ? await readFile(dataPath(source.snapshot), 'utf8') : null;
+          const previous = source ? await readData(source.snapshot, 'utf8') : null;
           const snapshot = previous === html ? source.snapshot : '19129-' + checkedAt.replace(/[:.]/g, '-') + '-' + fingerprint(html).slice(0, 12) + '.html';
           if (previous !== html) await save(snapshot, html);
           await save('activity-source.json', JSON.stringify({ snapshot, checkedAt }));
@@ -1519,7 +1543,8 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
         if (req.method !== 'GET') throw new Problem('操作不支援。', 405);
         const latest = await readSaved('source-update.json');
         const records = await readSaved('official-images.json') ?? {};
-        const provider = (await readSaved('model-preferences.json'))?.provider ?? 'gemini';
+        const settings = await modelSettings();
+        const { provider } = settings;
         const pendingBatch = await readSaved('pending-codex-batch.json');
         const savedMethods = (await readSaved('activity-methods.json'))?.methods ?? {};
         let body = '';
@@ -1529,7 +1554,7 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
             body = items.flatMap(item => item.methods.filter(target => target.kind === 'method').map(target => {
               const previous = savedMethods[target.id];
               const state = !previous ? '尚未整理' : previous.inputKey === methodFingerprint(item, target, records,
-                provider, provider === 'codex' ? CODEX_MODEL : process.env.GEMINI_MODEL) ? '摘要已是最新' : '摘要待重整 · 舊摘要仍可讀';
+                provider, modelName(provider, settings)) ? '摘要已是最新' : '摘要待重整 · 舊摘要仍可讀';
               return '<li><a href="/activities/' + item.id + '#' + target.id + '">' + escape(item.title + ' › ' + target.title) +
                 '</a> · ' + state + (previous?.at ? ' · 摘要完成 ' + escape(formatTimestamp(previous.at)) : '') +
                 (state === '摘要已是最新' ? '' : '<form method="post" action="/activities/' + item.id + '/' + target.id + '"><button>整理這個方法</button></form>') + '</li>';
@@ -1542,9 +1567,16 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
             ' 張 · 無法查驗圖片 ' + latest.failed + ' 張</p>' : '') +
           '<form method="post"><button>重新取得官方來源</button></form>' +
           '<form method="post" action="/model-preferences"><label>摘要預設模型 <select name="provider">' +
-          '<option value="gemini"' + (provider === 'gemini' ? ' selected' : '') + '>Gemini</option>' +
-          '<option value="codex"' + (provider === 'codex' ? ' selected' : '') + '>訂閱 Codex</option></select></label> ' +
-          '<button>保存長期預設</button></form>' +
+          Object.entries(providerLabels).map(([id, label]) =>
+            '<option value="' + id + '"' + (provider === id ? ' selected' : '') + '>' + label + '</option>').join('') +
+          '</select></label> ' +
+          [['geminiModel', 'Gemini 模型', process.env.GEMINI_MODEL], ['codexModel', 'Codex 模型', 'CLI 預設'],
+           ['ollamaModel', 'Ollama 模型', '請輸入已安裝的模型名稱']].map(([field, label, placeholder]) =>
+            '<label>' + label + ' <input name="' + field + '" value="' + escape(settings[field] ?? '') +
+            '" placeholder="' + escape(placeholder ?? '') + '" maxlength="160"></label> ').join('') +
+          '<label>Gemini API 金鑰 <input type="password" name="geminiKey" autocomplete="new-password" maxlength="512"></label> ' +
+          '<small>留白沿用目前金鑰。</small> <button name="action" value="save">保存長期預設</button> ' +
+          '<button name="action" value="test">測試所選模型</button></form>' +
           (pendingBatch?.ids.length ? '<form method="post" action="/activities/' + pendingBatch.activity + '/batch"><p>' +
             escape(pendingBatch.message) + '</p>' + pendingBatch.ids.map(id =>
             '<input type="hidden" name="method" value="' + escape(id) + '">').join('') +
@@ -1553,9 +1585,33 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
       if (req.method === 'POST' && url.pathname === '/model-preferences') {
         if (importing) throw new Problem('公告正在處理中。', 409);
         importing = methodLocked = true;
-        const provider = (await formData(req)).get('provider');
-        if (!['gemini', 'codex'].includes(provider)) throw new Problem('請選擇可用的模型。');
-        await save('model-preferences.json', JSON.stringify({ provider }));
+        const form = await formData(req);
+        const provider = form.get('provider');
+        if (!isProvider(provider)) throw new Problem('請選擇可用的模型。');
+        const settings = { ...await modelSettings(), provider };
+        for (const field of modelFields) {
+          if (!form.has(field)) continue;
+          const value = form.get(field).trim();
+          const pattern = field === 'ollamaModel' ? /^[\w.:/-]{0,160}$/ : /^[\w.-]{0,160}$/;
+          if (!pattern.test(value)) throw new Problem('模型名稱格式有誤。');
+          settings[field] = value;
+        }
+        if (provider === 'ollama' && !settings.ollamaModel) throw new Problem('請輸入本機 Ollama 模型名稱。');
+        const geminiKey = form.get('geminiKey')?.trim();
+        if (geminiKey && !/^[\x21-\x7e]{1,512}$/.test(geminiKey)) throw new Problem('Gemini 金鑰格式有誤。');
+        if (form.get('action') === 'test') {
+          const generate = await generator(provider, settings, geminiKey);
+          const { result } = await generate('只回傳符合格式的 JSON，將 ok 設為 true。', {}, { ok: { type: 'boolean' } });
+          if (result?.ok !== true || Object.keys(result).length !== 1) throw new Problem('模型未通過結構化輸出測試。');
+          return respond(200, page('模型連線測試', '<h1>連線測試成功</h1><p>' + providerLabels[provider] +
+            ' 可回傳結構化輸出。這次測試沒有保存設定。</p><p><a href="/updates">回到設定</a></p>'));
+        }
+        if (geminiKey) {
+          await mkdir(dir, { recursive: true });
+          await writeFile(credentialPath + '.tmp', JSON.stringify({ geminiKey }), { mode: 0o600 });
+          await rename(credentialPath + '.tmp', credentialPath);
+        }
+        await save('model-preferences.json', JSON.stringify(settings));
         return res.writeHead(303, { Location: '/updates' }).end();
       }
       if (req.method === 'GET' && /^\/corrections\/official-[a-f0-9]{64}\.html$/.test(url.pathname)) {
@@ -1564,7 +1620,7 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
         if (!Object.values(records).flat().some(record => record.snapshot === name)) throw new Problem('找不到已保存的來源。', 404);
         return res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8',
           'Content-Disposition': 'attachment; filename="official-source.txt"', 'X-Content-Type-Options': 'nosniff' })
-          .end(await readFile(dataPath(name), 'utf8'));
+          .end(await readData(name, 'utf8'));
       }
       if (url.pathname === '/corrections') {
         if (req.method === 'POST') {
@@ -1627,11 +1683,14 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
           await save('activity-source.json', JSON.stringify({ snapshot, checkedAt: capturedAt }));
           const notice = extract(html);
           const previous = await readSaved();
-          if (previous?.model?.model && fingerprint(previous.notice) === fingerprint(notice) && previous.model.model === process.env.GEMINI_MODEL) {
+          const importSettings = await modelSettings();
+          const importProvider = importSettings.provider;
+          if (previous?.model?.model && fingerprint(previous.notice) === fingerprint(notice) && previous.model.model === modelName(importProvider, importSettings) &&
+              (previous.model.provider ?? 'gemini') === importProvider) {
             await save('status.json', JSON.stringify('公告內容未變，沿用已保存摘要。'));
             return respond(200, home(previous, '核心寶石', now()));
           }
-          const generated = await summarize(notice);
+          const generated = await summarize(notice, await generator(importProvider, importSettings));
           const summary = validate(generated?.result ?? generated, notice);
           const saved = { notice, summary, snapshot, capturedAt, model: generated?.metadata ?? null };
           await save('summary.json', JSON.stringify(saved, null, 2));
@@ -1670,7 +1729,7 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
             const candidates = listing ? searchCatalog(items, { ...listing.filters, query: '' }, now(), listing.images,
               { includeMethods: true }).filter(entry => !listing.filters.watched || listing.watches[watchKey(entry)]) : [];
             lockModel();
-            assist = await searchWithAgent(query, candidates, playerAssistant(await preferredProvider(), codexGenerate, generatePlayerAssistance));
+            assist = await searchWithAgent(query, candidates, await askWith());
           } catch (error) {
             if (!(error instanceof Problem)) throw error;
             assist = { error: error.message };
@@ -1693,7 +1752,7 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
             throw new Problem('請選擇兩種不同的取得方式。');
           }
           lockModel();
-          const result = await compareMethods(selections, playerAssistant(await preferredProvider(), codexGenerate, generatePlayerAssistance));
+          const result = await compareMethods(selections, await askWith());
           return respond(200, comparisonPage(methods, from, ids, result));
         } catch (error) {
           if (!(error instanceof Problem)) throw error;
@@ -1707,7 +1766,7 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
         if (url.searchParams.has('v') && url.searchParams.get('v') !== record.version) {
           throw new Problem('這張圖片的版本已更新。', 404);
         }
-        const bytes = await readFile(dataPath('image-' + record.version));
+        const bytes = await readData('image-' + record.version);
         return res.writeHead(200, { 'Content-Type': record.mime, 'X-Content-Type-Options': 'nosniff' }).end(bytes);
       }
       if (url.pathname === '/review' || url.pathname === '/review/source') {
@@ -1717,7 +1776,7 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
         }
         const source = await readSaved('activity-source.json') ?? await readSaved();
         if (!source) throw new Problem('請先匯入公告 19129。', 404);
-        const html = await readFile(dataPath(source.snapshot), 'utf8');
+        const html = await readData(source.snapshot, 'utf8');
         if (req.method === 'GET' && url.pathname === '/review/source') {
           return res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8',
             'Content-Disposition': 'attachment; filename="19129-source.txt"', 'X-Content-Type-Options': 'nosniff' }).end(html);
@@ -1847,15 +1906,16 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
           await save('official-images.json', JSON.stringify(imageRecords, null, 2));
           if (action === 'recognize') {
             try {
-              record.recognition = await summarizeImage({ bytes: await readFile(dataPath('image-' + record.version)), mime: record.mime });
+              record.recognition = await summarizeImage({ bytes: await readData('image-' + record.version), mime: record.mime },
+                await generator(await preferredProvider()));
             } catch (error) {
-              await writeJob(imageJobId, { ...imageJob, provider: 'gemini', ...jobFailure(error, 'model') });
+              await writeJob(imageJobId, { ...imageJob, provider: await preferredProvider(), ...jobFailure(error, 'model') });
               throw error;
             }
             await save('official-images.json', JSON.stringify(imageRecords, null, 2));
           }
           if ((await readSaved('jobs.json'))?.[imageJobId]) {
-            await writeJob(imageJobId, { ...imageJob, state: 'done', provider: action === 'recognize' ? 'gemini' : undefined,
+            await writeJob(imageJobId, { ...imageJob, state: 'done', provider: action === 'recognize' ? await preferredProvider() : undefined,
               usage: action === 'recognize' ? record.recognition?.model?.usage ?? null : undefined });
           }
           const methods = await readSaved('activity-methods.json');
@@ -1879,7 +1939,7 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
           try {
             if (!question || question.length > 500) throw new Problem('請輸入 1–500 字的問題。');
             const result = await answerPlayer(item, question,
-              playerAssistant(preferred, codexGenerate, generatePlayerAssistance), verifiedImageSources(item, imageRecords));
+              await askWith(preferred), verifiedImageSources(item, imageRecords));
             content = '<h2>回答</h2>' + (result.facts.length ? assistantFacts(result.facts) : '<p>已收錄的公告沒有足夠資料回答。</p>') +
               (result.incomplete && result.facts.length ? '<p>部分條件仍需核對官方公告。</p>' : '') +
               assistantModel(result.metadata) + assistantEvidence(result.facts);
@@ -1896,7 +1956,9 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
           const batch = methodId === 'batch';
           const form = await formData(req);
           const requestedProvider = form.get('provider');
-          const provider = batch ? 'codex' : ['gemini', 'codex'].includes(requestedProvider) ? requestedProvider : preferred;
+          const provider = batch ? 'codex' : isProvider(requestedProvider) ? requestedProvider : preferred;
+          const settings = await modelSettings();
+          const generate = await generator(provider, settings);
           const ids = batch ? [...new Set(form.getAll('method'))] : [target.id];
           const targets = item.methods.filter(entry => entry.kind === 'method' && ids.includes(entry.id));
           if (!targets.length || targets.length !== ids.length) throw new Problem('請選擇本活動的取得方法。');
@@ -1913,7 +1975,7 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
             activeJobId = job.id;
             let generated;
             try {
-              const inputKey = methodFingerprint(item, target, imageRecords, provider, provider === 'codex' ? CODEX_MODEL : process.env.GEMINI_MODEL);
+              const inputKey = methodFingerprint(item, target, imageRecords, provider, modelName(provider, settings));
               if (summaries[target.id]?.inputKey === inputKey) {
                 Object.assign(job, { state: 'done', usage: summaries[target.id].model?.usage ?? null });
                 await save('jobs.json', JSON.stringify(jobs));
@@ -1922,18 +1984,16 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
               const sources = methodContext(item, target);
               const input = { title: item.title, method: target.title, sources };
               generated = provider === 'codex' ? await summarizeMethod(input, async (instruction, input, properties) => {
-                const parts = [{ text: JSON.stringify(input) }];
+                const media = [];
                 for (const imageUrl of new Set([...target.images, ...(item.sharedImages ?? [])])) {
                   const record = imageRecords[imageKey(imageUrl)];
                   if (!record?.selected || item.shopImages?.includes(imageUrl)) continue;
-                  const bytes = record.version ? await readFile(dataPath('image-' + record.version)).catch(() => null) : null;
+                  const bytes = record.version ? await readData('image-' + record.version).catch(() => null) : null;
                   if (!bytes) throw Object.assign(new Problem('請先保存已選入的官方原圖，再重試摘要。'), { missingImage: true });
-                  parts.push({ inlineData: { mimeType: record.mime, data: bytes.toString('base64') } });
+                  media.push({ inlineData: { mimeType: record.mime, data: bytes.toString('base64') } });
                 }
-                const output = await codexGenerate({ parts, instruction,
-                  schema: { type: 'object', properties, required: Object.keys(properties) } });
-                return { result: output.result, metadata: { model: output.model, usage: output.usage, provider } };
-              }) : await summarizeActivityMethod(input);
+                return generate(instruction, input, properties, media);
+              }) : await summarizeActivityMethod(input, generate);
               const known = methodFacts(item, target);
               const facts = validateMethod(generated.result, sources, {
                 eligibility: item.eligibility ? [item.eligibility.id] : [],

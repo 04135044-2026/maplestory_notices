@@ -3,8 +3,10 @@ import { mkdir, readdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { Problem } from './notice.mjs';
 import { announcementUrl } from './discovery.mjs';
+import { publicModelSettings } from './model-providers.mjs';
 
 const maxBytes = 128 * 1024 * 1024;
+export const backupPayloadLimit = maxBytes - 8192;
 const marker = '.restored-data';
 const generation = /^[0-9a-f-]{36}$/;
 const records = new Set([
@@ -34,14 +36,24 @@ export async function createBackup(dir, now) {
     if (error.code !== 'ENOENT') throw error;
     return [];
   });
+  async function* savedFiles() {
+    for (const entry of entries.filter(entry => entry.isFile() && supported(entry.name)).sort((a, b) => a.name.localeCompare(b.name))) {
+      yield [entry.name, await readFile(join(dir, entry.name))];
+    }
+  }
+  return backupFromFiles(savedFiles(), now);
+}
+
+export async function backupFromFiles(entries, now) {
   let size = 0;
   const files = [];
-  for (const entry of entries.filter(entry => entry.isFile() && supported(entry.name)).sort((a, b) => a.name.localeCompare(b.name))) {
-    const bytes = await readFile(join(dir, entry.name));
+  for await (const [name, content] of entries) {
+    if (!supported(name)) continue;
+    const bytes = name === 'model-preferences.json' ? modelPreferencesBytes(content) : content;
     const data = bytes.toString('base64');
-    size += data.length + entry.name.length + 160;
-    if (size > maxBytes - 8192) throw new Problem('備份資料超過目前可還原的大小。', 413);
-    files.push({ name: entry.name, sha256: digest(bytes), data });
+    size += data.length + name.length + 160;
+    if (size > backupPayloadLimit) throw new Problem('備份資料超過目前可還原的大小。', 413);
+    files.push({ name, sha256: digest(bytes), data });
   }
   return { format: 'maplestory-notices-backup', version: 1, createdAt: now.toISOString(), files };
 }
@@ -66,7 +78,9 @@ export async function readBackupUpload(req) {
   }
 }
 
-function validateBackup(backup) {
+const modelPreferencesBytes = bytes => Buffer.from(JSON.stringify(publicModelSettings(JSON.parse(bytes.toString('utf8')))));
+
+export function validateBackup(backup) {
   if (backup?.format !== 'maplestory-notices-backup' || backup.version !== 1 || !Array.isArray(backup.files)) {
     throw new Problem('備份檔格式或版本無法辨識。');
   }
@@ -138,6 +152,7 @@ function validateBackup(backup) {
   for (const collection of [discovery?.entries, discovery?.queue]) {
     for (const record of Object.values(collection ?? {})) announcementUrl(record.url);
   }
+  if (files.has('model-preferences.json')) files.set('model-preferences.json', modelPreferencesBytes(files.get('model-preferences.json')));
   return files;
 }
 

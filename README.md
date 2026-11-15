@@ -9,7 +9,7 @@ npm ci
 node --env-file-if-exists=.env src/start.mjs
 ```
 
-啟動後開啟終端顯示的網址，預設為 [http://127.0.0.1:3181](http://127.0.0.1:3181)。可用環境變數 `PORT` 指定連接埠。要使用 Gemini 整理摘要或查詢，請參照 `.env.example`，在專案根目錄的 `.env` 設定 `GEMINI_API_KEY` 與 `GEMINI_MODEL`。
+啟動後開啟終端顯示的網址，預設為 [http://127.0.0.1:3181](http://127.0.0.1:3181)。可用環境變數 `PORT` 指定連接埠。到「公告管理 → 來源與摘要更新」可選 Gemini、已登入的 Codex CLI 或本機 Ollama。填寫模型後，先按「測試所選模型」，成功再按「保存長期預設」。Gemini 金鑰留白會沿用既有金鑰，也可沿用專案 `.env` 的舊設定。Ollama 需在本機執行並已安裝該模型。
 
 第一次使用可從「公告管理 → 公告探索」貼上官方版本公告網址並保存來源。公告管理也提供「匯入並整理公告 19129」的快捷入口。收錄後可搜尋「核心寶石」，點「查看取得方式」，從活動筆記核對資格、步驟、上限和期限。已保存的結果可離線查閱。
 
@@ -21,6 +21,27 @@ node --env-file-if-exists=.env src/start.mjs
 - **外觀**可選跟隨系統、淺色或深色，瀏覽器會記住選擇。日曆色條有清楚的邊線與文字標籤。
 
 公告明列子活動專屬的領獎期間、效果到期或限時補完規則時，會在對應項目標示。像「12/02 維護後」會保留原文和日期，確切時刻維持未知。
+
+## 用 PostgreSQL 試移轉一份備份
+
+先在原本的網站開啟「備份與還原」並下載 JSON。保持 Docker 的資料庫運行。另開 PowerShell，在專案資料夾執行以下指令。若 Docker 使用 5433，將 5432 改成 5433。
+
+```powershell
+$mapleSecretFile = Join-Path $env:LOCALAPPDATA 'maple-postgres/.env'
+$maplePassword = ((Get-Content -LiteralPath $mapleSecretFile | Where-Object { $_ -like 'MAPLE_DB_PASSWORD=*' }) -split '=', 2)[1]
+$env:MAPLE_DATABASE_URL = 'postgresql://maple_admin:' + [uri]::EscapeDataString($maplePassword) + '@127.0.0.1:5432/maple_dev'
+$env:MAPLE_DATABASE_NAMESPACE = 'maple-trial-01'
+node src/import-postgres.mjs 'C:/請改成實際路徑/maplestory-backup.json'
+```
+
+看到「試移轉完成」後，在同一個 PowerShell 啟動試用網站：
+
+```powershell
+$env:PORT = '3211'
+node --env-file-if-exists=.env src/start.mjs
+```
+
+開啟 `http://127.0.0.1:3211`，搜尋既有備份中的獎勵，確認活動筆記、取得方法及官方原文能開啟。按 Ctrl+C 後重啟，再核對一次。試移轉模式暫停每日排程；如要重做試移轉，請改用新的資料集名稱。PostgreSQL 模式可下載備份，網站內還原將在完整移轉工單交付。
 
 ## 回歸測試
 
@@ -44,7 +65,7 @@ node --test
 2. **比較兩種取得方式**。從同一區點「比較兩種取得方式」，選「燃燒之城應援」與「墮落雷霆應援」，查看並排的資格、方式、獎勵、限制與成本。也可選不同活動的方法。
 3. **自然語言搜尋**。首頁先搜尋「那個烤章魚的椅子怎麼拿」。名稱搜尋零筆或超過八筆時，按「用 Agent 搜尋」取得已收錄的候選及取得方式連結。活動狀態和獎勵類型篩選也會套用。
 
-這些功能在送出後使用「公告管理 → 來源與摘要更新」設定的預設模型（Gemini 或本機訂閱 Codex）。網站會將提問或搜尋句送至該模型，結果只在當次頁面顯示。公告筆記、表格及名稱搜尋可直接查閱。
+這些功能在送出後使用「公告管理 → 來源與摘要更新」設定的預設模型（Gemini、已登入的 Codex CLI 或本機 Ollama）。網站會將提問或搜尋句送至該模型，結果只在當次頁面顯示。公告筆記、表格及名稱搜尋可直接查閱。
 
 官方圖片有文字或數值時，從活動筆記展開「官方圖片來源與選圖」，預覽原圖，並展開「圖片辨識 · 待人工核對」。對照原圖編修辨識稿後，按「核對並加入活動筆記」。筆記會顯示核對文字及原圖，之後「問這個活動」也能引用。圖片換版後需重新核對。
 

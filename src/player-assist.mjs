@@ -1,5 +1,5 @@
 import { methodContext } from './catalog.mjs';
-import { generateSummary, Problem } from './notice.mjs';
+import { Problem } from './notice.mjs';
 
 export const comparisonFields = {
   eligibility: '參加資格', steps: '取得方式', rewards: '獎勵', limits: '次數與期限', costs: '成本',
@@ -33,14 +33,10 @@ function validateFacts(facts, sources, max = 8) {
   return facts.map(fact => ({ text: fact.text, sources: [...new Set(fact.sources)].map(id => allowed.get(id)) }));
 }
 
-export function playerAssistant(provider, codexGenerate, generate = generateSummary) {
+export function playerAssistant(generate) {
   return async (task, input, properties) => {
-    const serialized = JSON.stringify(input);
-    if (serialized.length > 160000) throw new Problem('資料超過單次整理範圍，請縮小問題或搜尋篩選。');
-    if (provider !== 'codex') return generate(instruction + task, input, properties);
-    const output = await codexGenerate({ instruction: instruction + task, parts: [{ text: serialized }],
-      schema: { type: 'object', properties, required: Object.keys(properties) } });
-    return { result: output.result, metadata: { model: output.model, usage: output.usage } };
+    if (JSON.stringify(input).length > 160000) throw new Problem('資料超過單次整理範圍，請縮小問題或搜尋篩選。');
+    return generate(instruction + task, input, properties);
   };
 }
 

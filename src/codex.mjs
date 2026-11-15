@@ -35,7 +35,7 @@ function strictSchema(schema) {
 export function createCodexGenerator({ executable = process.env.CODEX_EXECUTABLE || (process.platform === 'win32' ? 'codex.exe' : 'codex') } = {}) {
   const npmEntry = join(process.env.APPDATA ?? '', 'npm', 'node_modules', '@openai', 'codex', 'bin', 'codex.js');
   const command = !process.env.CODEX_EXECUTABLE && process.platform === 'win32' && existsSync(npmEntry) ? [process.execPath, npmEntry] : [executable];
-  return async ({ parts, instruction, schema }) => {
+  return async ({ parts, instruction, schema, model }) => {
     // The CLI reuses its own login. Do not pass API keys or alternate access tokens.
     const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^(OPENAI_|CODEX_ACCESS_TOKEN$|CODEX_API_KEY$|GEMINI_|GOOGLE_API_KEY$)/i.test(key)));
     const dir = await mkdtemp(join(tmpdir(), 'maple-codex-'));
@@ -55,6 +55,7 @@ export function createCodexGenerator({ executable = process.env.CODEX_EXECUTABLE
       const args = ['-a', 'never', 'exec', '--ignore-user-config', '--ephemeral', '--skip-git-repo-check',
         '--sandbox', 'read-only', '-c', 'forced_login_method="chatgpt"', '-c', 'features.shell_tool=false',
         '-c', 'web_search="disabled"', '--json', '--output-schema', schemaPath];
+      if (model) args.push('--model', model);
       for (const part of parts.filter(part => part.inlineData)) {
         const { mimeType, data } = part.inlineData;
         const extension = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp' }[mimeType];
@@ -79,7 +80,7 @@ export function createCodexGenerator({ executable = process.env.CODEX_EXECUTABLE
         throw fail('MODEL_REQUEST_FAILED', 'Codex 未能完成工作，請核對本機 CLI 版本及連線。', 502);
       }
       const message = events.findLast(event => event?.type === 'item.completed' && event.item?.type === 'agent_message');
-      try { return { result: JSON.parse(message.item.text), model: CODEX_MODEL, usage }; }
+      try { return { result: JSON.parse(message.item.text), model: model || CODEX_MODEL, usage }; }
       catch { throw fail('INVALID_MODEL_OUTPUT', 'Codex 未回傳有效的結構化結果，舊結果仍可查閱。', 422); }
     } catch (error) {
       if (error instanceof AppError) throw error;

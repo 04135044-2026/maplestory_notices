@@ -73,3 +73,64 @@ test('匯入官方公告後可從首頁搜尋獎勵，重開仍可查看獎勵�
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test('PostgreSQL 移轉既有備份後，重啟仍可搜尋獎勵和核對官方原文', {
+  skip: !process.env.MAPLE_TEST_DATABASE_URL,
+}, async t => {
+  const { randomUUID } = await import('node:crypto');
+  const { default: pg } = await import('pg');
+  const { openPostgresStore } = await import('../src/postgres-store.mjs');
+  const dir = await mkdtemp(join(tmpdir(), 'maple-pg-flow-'));
+  const connectionString = process.env.MAPLE_TEST_DATABASE_URL;
+  const namespace = 'test-' + randomUUID();
+  const servers = [];
+  const stores = [];
+  t.after(async () => {
+    await Promise.all(servers.filter(server => server.listening).map(server => new Promise(resolve => server.close(resolve))));
+    await Promise.all(stores.map(store => store.close()));
+    const pool = new pg.Pool({ connectionString });
+    try { await pool.query('DELETE FROM maple_saved_files WHERE namespace = $1', [namespace]); }
+    finally { await pool.end(); await rm(dir, { recursive: true, force: true }); }
+  });
+  async function start(options) {
+    const server = website({ dir, now: () => new Date('2026-11-12T20:00:00+08:00'), ...options });
+    servers.push(server);
+    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+    return { server, url: 'http://127.0.0.1:' + server.address().port };
+  }
+  const local = await start({ fetchSource: async () => html,
+    summarize: async () => ({
+      eligibility: { text: 'Lv200', source: 's2' },
+      first: { text: '每週三選燃燒之城', source: 's3' },
+      steps: { text: '狩獵500隻後從介面領取', source: 's4' },
+      reward: { text: 'Lv259 以下：核心寶石交換券 ×5', source: 's5' },
+      limits: { text: '每日10次，每週30次', source: 's6' },
+    }) });
+  assert.equal((await fetch(local.url + '/import', { method: 'POST' })).status, 200);
+  const oldHome = await (await fetch(local.url + '/?q=核心寶石')).text();
+  const oldNote = oldHome.match(/href="(\/note\?q=[^"]+#method)"/)?.[1];
+  assert.ok(oldNote);
+  const backupResponse = await fetch(local.url + '/backup/download');
+  assert.equal(backupResponse.status, 200);
+  const backup = await backupResponse.json();
+
+  const first = await openPostgresStore({ connectionString, namespace });
+  try { await first.importBackup(backup); }
+  finally { await first.close(); }
+  const store = await openPostgresStore({ connectionString, namespace });
+  stores.push(store);
+  const pgDir = join(dir, 'empty-postgres-local-dir');
+  const current = await start({ dir: pgDir, store, fetchSource: async () => { throw new Error('應離線查閱'); } });
+  const page = await (await fetch(current.url + '/?q=核心寶石')).text();
+  assert.ok(page.includes(oldNote));
+  const note = await (await fetch(current.url + oldNote)).text();
+  assert.match(note, /狩獵500隻後從介面領取/);
+  assert.match(note, /eventAdId=19129/);
+  const source = await fetch(current.url + '/review/source');
+  assert.equal(source.status, 200);
+  assert.equal(await source.text(), html);
+  const exported = await (await fetch(current.url + '/backup/download')).json();
+  for (const file of backup.files.filter(file => file.name === 'summary.json' || file.name.endsWith('.html'))) {
+    assert.deepEqual(exported.files.find(saved => saved.name === file.name), file);
+  }
+});
