@@ -92,7 +92,9 @@ export function timeline(item, method) {
   const makeup = own.filter(source => !source.rows && /補完|補簽|補領/.test(source.text) &&
     /\d{1,2}\/\d{1,2}.*(?:維護後|起|開始|截止|為止)/.test(source.text))
     .map(source => range(source, sourceYears, deadlineBounds));
-  const claim = localClaim ? range(localClaim, sourceYears, deadlineBounds) : base?.claim ?? { source: null };
+  const inheritedClaim = base?.claim ?? { source: null };
+  const claim = localClaim ? range(localClaim, sourceYears, deadlineBounds) :
+    localOpen ? { ...inheritedClaim, start: undefined } : inheritedClaim;
   if (claim.end && !claim.start && /自活動開始|為活動開始/.test(localClaim?.text ?? '') && participation.start) {
     claim.start = participation.start;
   }
@@ -105,7 +107,8 @@ export function timeline(item, method) {
   return {
     participation: method ? participation : corrected(participation, item.changes?.participation),
     claim: claim.change ? claim : corrected(claim, localClaim && method ? null : item.changes?.claim),
-    opening: localOpen ? range(localOpen, sourceYears, bounds) : base?.opening ?? { source: null },
+    opening: localOpen ? range(localOpen, sourceYears, bounds) :
+      localClaim && claim.start ? { source: null } : base?.opening ?? { source: null },
     effect: range(effect, sourceYears, deadlineBounds),
     makeup: method ? [...(base.makeup ?? []), ...makeup.filter(rule => !base.makeup.some(entry => entry.source.id === rule.source.id))] : makeup,
     resets: own.filter(source => !source.rows && /初始化|重置/.test(source.text)),
@@ -117,6 +120,16 @@ function compare(point, now) {
   if (point.exact !== null) return Math.sign(+now - point.exact);
   const today = taipei.format(now);
   return today === point.date ? null : today < point.date ? -1 : 1;
+}
+
+export function isClaimable({ claim, opening, participation }, now) {
+  if (opening.source && !opening.start) return false;
+  const starts = [claim.start, opening.start].filter(Boolean);
+  if (!starts.length && participation.start) starts.push(participation.start);
+  return starts.length > 0 && starts.every(point => {
+    const order = compare(point, now);
+    return order !== null && order >= 0;
+  }) && compare(claim.end, now) === -1;
 }
 
 export function activityState(periods, now) {

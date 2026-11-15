@@ -23,6 +23,7 @@ import { announcementUrl, collectAnnouncements, discoveryWindow, officialAnnounc
 import { sourceTracking } from './tracking.mjs';
 import { jobFailure, METHOD_BATCH, SOURCE_BATCH, sourceAttempt } from './jobs.mjs';
 import { DEFAULT_SCHEDULE, dueCheck, validSchedule } from './schedule.mjs';
+import { officialImageOrigins, originalBlocks } from './original-source.mjs';
 import { activeDataDirectory, createBackup, readBackupUpload, restoreBackup } from './backup.mjs';
 import { siteAppearance, themeControl } from './site-appearance.mjs';
 
@@ -335,7 +336,7 @@ function watchButton(entry, watches, back) {
 }
 
 function catalogResults(entries, saved, watches, back = '/') {
-  if (!entries.length) return '<p>在已收錄的公告 19129 及其他已確認來源中找不到符合的結果。</p>';
+  if (!entries.length) return '<p>找不到符合的活動或目前可領取的獎勵。</p>';
   return activityGroups(entries, entry => entry.item, ({ item, method: target, reward, state, periods, image }) => {
     const legacy = saved && reward && item.title === activity && target.title === method &&
       matchingRewards(saved.notice, reward.name).some(entry => entry.name === reward.name && entry.quantity === reward.quantity);
@@ -346,7 +347,7 @@ function catalogResults(entries, saved, watches, back = '/') {
       (reward ? '<p>' + escape(item.title + ' › ' + target.title) + ' · ' + escape(reward.type) +
         (reward.group ? ' · ' + escape(reward.group) : '') + (reward.possible ? ' · 可能獎勵' : '') + '</p>' : '') +
       '<p>' + escape(state) + ' · ' + escape(periodText(periods.participation)) + '</p>' +
-      (state === '仍可領獎' ? '<p>領獎期限 · ' + escape(periodText(periods.claim)) + '</p>' : '') +
+      ((state === '仍可領獎' || reward && periods.claim.source) ? '<p>領獎期限 · ' + escape(periodText(periods.claim)) + '</p>' : '') +
       '<p>來源 · ' + escape(item.pageTitle) + (item.officialUrl ? '' : '（19129）') + '</p>' +
       (image ? '<img loading="lazy" style="max-width:160px" src="/images/' + image + '" alt="' + escape(reward.name) + '">' :
         reward ? '<p>尚無外觀圖片</p>' : '') +
@@ -500,13 +501,13 @@ function managementPage(saved, status, hasSnapshot) {
 function home(saved, query, now, hasSnapshot = Boolean(saved), listing, assist) {
   const hasSearch = query || listing?.filters.status || listing?.filters.type || listing?.filters.watched;
   const entries = listing ? searchCatalog(listing.items, listing.filters, now, listing.images,
-    { includeMethods: listing.filters.watched }).filter(entry => !listing.filters.watched ||
+    { includeMethods: listing.filters.watched, claimableRewards: Boolean(query) }).filter(entry => !listing.filters.watched ||
       ((!entry.method || entry.reward) && listing.watches[watchKey(entry)])) : [];
   const back = listing?.back ?? '/';
   const offerAssist = listing && query && (!entries.length || entries.length > 8 || assist);
   let nameResults = listing && !hasSearch && !assist ? homeActivities(entries, now) :
     listing ? catalogResults(entries, listing.snapshot === saved?.snapshot ? saved : null, listing.watches, back) :
-    searchResults(saved, query, now);
+    query ? '<p>找不到可確認目前仍能領取的獎勵。</p>' : searchResults(saved, query, now);
   if (assist) nameResults = entries.length || !assist.matches?.length
     ? '<section><h2>名稱搜尋結果</h2>' + nameResults + '</section>' : '';
   return page('新楓之谷公告懶人包', primaryTabs('/') + '<h1 class="home-title">活動與獎勵</h1><div class="home-search"><form method="get" action="/"><label for="q">搜尋獎勵或活動</label> <input id="q" name="q" value="' +
@@ -535,7 +536,7 @@ function reviewPage(document, automatic, previous, message, route = '/review', o
     automatic.flatMap(item => (item.warnings ?? []).filter(warning => item.template === 'beanfun-event-layout-v1')
       .map(warning => '<p role="status">' + escape(warning) + '</p>')).join('') +
     (previous && previous.fingerprint !== document.fingerprint ? '<p role="status">來源已變更，舊人工歸屬需重新核對。</p>' : '') +
-    '<p><a href="' + route + '/source" download>下載完整來源快照</a>' +
+    '<p><a href="' + route + '/original">在網站查看官方公告原文</a> · <a href="' + route + '/source" download>下載完整來源快照</a>' +
     (officialUrl ? ' · <a href="' + escape(officialUrl) + '">官方公告 ↗</a> · <a href="/discover">回公告探索</a>' : '') + '</p>' +
     (previous ? '<p>已保存人工確認：' + previous.entries.map(entry => escape(entry.title + ' › ' + entry.methods[0].title)).join('、') + '</p>' : '') +
     '<form method="post"><input type="hidden" name="fingerprint" value="' + document.fingerprint + '">' +
@@ -548,6 +549,32 @@ function reviewPage(document, automatic, previous, message, route = '/review', o
       '<label><input type="checkbox" name="own" value="' + block.id + '">方法內容</label> ' +
       '<label><input type="checkbox" name="shared" value="' + block.id + '">適用共用條件</label></article>').join('') +
     '<button>確認並保存拆分</button></form>');
+}
+
+function originalPage(html, { title, url, route }) {
+  const blocks = originalBlocks(html, url);
+  const preview = ({ image, text }) => '<a href="' + escape(image) +
+    '"><img loading="lazy" style="max-width:100%;height:auto" src="' + escape(image) + '" alt="' +
+    escape(text || '官方公告圖片') + '"></a>';
+  const span = (name, value) => Number.isInteger(value) && value >= (name === 'rowspan' ? 0 : 2) &&
+    value !== 1 && value <= 1000 ? ' ' + name + '="' + value + '"' : '';
+  const render = parts => parts.map(part => {
+    if (typeof part === 'string') return escape(part);
+    if (part.image) return preview(part);
+    if (part.tag === 'br') return '<br>';
+    return '<' + part.tag + span('colspan', part.colspan) + span('rowspan', part.rowspan) + '>' +
+      render(part.children) + '</' + part.tag + '>';
+  }).join('');
+  return page('官方公告原文', '<nav><a href="' + route + '">← 回公告</a></nav><h1>官方公告原文</h1><p>' +
+    escape(title) + '</p><p><a href="' + escape(url) + '">回官方公告 ↗</a> · <a href="' + route +
+    '/source" download>下載完整來源快照</a></p>' +
+    (blocks.length ? '<div class="source-panel">' + blocks.map((block, index) => '<article id="' + block.id + '"><a href="#' + block.id +
+      '">原文區塊 ' + (index + 1) + '</a>' + (block.image ? '<figure>' + preview(block) +
+        (block.text ? '<figcaption>' + escape(block.text) + '</figcaption>' : '') + '</figure>' :
+        block.heading ? '<h2>' + escape(block.text) + '</h2>' : block.table ?
+          '<div class="source-table" tabindex="0" role="region" aria-label="官方公告表格">' + render(block.table) + '</div>' :
+          sourceBody(block)) + '</article>').join('') + '</div>' :
+      '<p>沒有可預覽的區塊，可下載完整快照核對。</p>'));
 }
 
 function discoveryPage(window, registry, message) {
@@ -913,7 +940,7 @@ function note(saved, now, query, catalogItem) {
     '<span class="event-label">星夜馬戲團 in 墮落城市</span><h1>' + activity +
     '</h1><p>' + time.status + (catalogItem ? ' · <a href="/activities/' + catalogItem.id + '#player-tools">玩家查詢</a>' : '') +
     '</p><dl>' + fact('eligibility') + row('參加期間', time.text, notice.date?.id) +
-    row('領獎期限', notice.claim ? '請查看公告所列領取條件' : '此活動段落未載明獨立領獎期限',
+    row('領獎期限', notice.claim?.text ?? '此活動段落未載明獨立領獎期限',
       notice.claim?.id ?? 'sources') + '</dl><article id="method"><h2>' + method +
     '</h2><dl>' + fact('first') + rewardDetails + fact('steps') + fact('limits') +
     '</dl><a href="#' + notice.table + '">查看應援規則與獎勵表</a></article>' +
@@ -931,10 +958,14 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
   const dataContext = new AsyncLocalStorage();
   let activeDirectory;
   let currentRoot;
-  const withData = async action => dataContext.run(await (activeDirectory ??= (store ? Promise.resolve(dir) : activeDataDirectory(dir)).then(path => {
-    currentRoot = path;
-    return path;
-  })), action);
+  const withData = async action => {
+    const root = await (activeDirectory ??= (store ? Promise.resolve(dir) : activeDataDirectory(dir)).then(path => {
+      currentRoot = path;
+      return path;
+    }));
+    const run = () => dataContext.run(root, action);
+    return store ? store.run(run) : run();
+  };
   const dataPath = (...parts) => join(dataContext.getStore(), ...parts);
   const readData = (name, encoding) => store ? store.read(name, encoding) : readFile(dataPath(name), encoding);
   let activeJobId = null;
@@ -952,7 +983,7 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
     await rename(target + '.tmp', target);
   }
   async function readCatalog(source) {
-    const key = dataPath(source.snapshot);
+    const key = JSON.stringify([store ? await store.cacheKey() : dataPath(), source.snapshot]);
     if (catalogCache?.key !== key) {
       const entry = {
         key,
@@ -1004,7 +1035,7 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
   let issueCache;
   async function readIssues(items) {
     const snapshots = issueSnapshots(await discoveryRegistry());
-    const key = fingerprint([dataPath(), snapshots.map(({ snapshot }) => snapshot), items.map(({ id, title }) => [id, title])]);
+    const key = fingerprint([store ? await store.cacheKey() : dataPath(), snapshots.map(({ snapshot }) => snapshot), items.map(({ id, title }) => [id, title])]);
     if (issueCache?.key === key) return issueCache.value;
     const documents = await Promise.all(snapshots.map(async entry => ({
       ...entry, html: await readData(entry.snapshot, 'utf8'),
@@ -1184,7 +1215,8 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
     };
     const respond = (status, body) => res.writeHead(status, {
       'Content-Type': 'text/html; charset=utf-8', 'X-Content-Type-Options': 'nosniff',
-      'Content-Security-Policy': "default-src 'none'; img-src 'self' https://tw.hicdn.beanfun.com; script-src 'self'; connect-src 'self'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'",
+      'Content-Security-Policy': "default-src 'none'; img-src 'self' " + officialImageOrigins.join(' ') +
+        "; script-src 'self'; connect-src 'self'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'",
     }).end(body);
     try {
       if (!/^(?:127\.0\.0\.1|localhost)(?::\d+)?$/.test(req.headers.host ?? '')) {
@@ -1223,24 +1255,30 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
         if (req.method === 'GET' && url.pathname === '/backup') {
           return respond(200, page('備份與還原', primaryTabs('/backup') + '<h1>備份與還原</h1>' +
             (url.searchParams.get('restored') === '1' ? '<p role="status">備份已還原，可從各分頁核對保存資料。</p>' : '') +
-            '<p><a href="/backup/download">下載本機備份</a></p>' +
+            '<p><a href="/backup/download">下載本機備份</a>' +
+            (store && await store.previousDataset() ? ' · <a href="/backup/download?previous=1">下載還原前的備份</a>' : '') + '</p>' +
             '<p>備份包含官方來源、圖片、摘要、人工拆分與修正、問題來源、關注、日曆匯出紀錄與設定。移到另一環境後請重新設定 API 金鑰與 Codex 登入。</p>' +
-            (store ? '<p>試移轉請使用 PostgreSQL 備份匯入指令，並指定新的資料集。</p>' :
+            (store ? '<p>在新的資料版本還原，並保留目前版本。</p>' : '') +
             '<form method="post" enctype="multipart/form-data"><label>選擇備份檔 <input type="file" name="backup" accept=".json,application/json" required></label>' +
             '<p><label><input type="checkbox" name="confirm" value="1" required> 確認切換至備份資料</label></p>' +
-            '<button>還原備份</button></form>')));
+            '<button>還原備份</button></form>'));
         }
         lockModel();
         if (req.method === 'GET' && url.pathname === '/backup/download') {
-          const backup = await (store ? store.createBackup(now()) : createBackup(dataPath(), now()));
+          const previous = url.searchParams.get('previous') === '1';
+          if (previous && !store) throw new Problem('找不到還原前的資料版本。', 404);
+          const backup = await (store ? store.createBackup(now(), { previous }) : createBackup(dataPath(), now()));
           return res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8',
             'Content-Disposition': 'attachment; filename="maplestory-backup.json"', 'Cache-Control': 'no-store' }).end(JSON.stringify(backup));
         }
         if (req.method === 'POST' && url.pathname === '/backup') {
-          if (store) throw new Problem('請使用 PostgreSQL 備份匯入指令建立新的試移轉資料集。', 409);
-          const restored = await restoreBackup(dir, await readBackupUpload(req));
-          currentRoot = restored;
-          activeDirectory = Promise.resolve(restored);
+          const backup = await readBackupUpload(req);
+          if (store) await store.restoreBackup(backup);
+          else {
+            const restored = await restoreBackup(dir, backup);
+            currentRoot = restored;
+            activeDirectory = Promise.resolve(restored);
+          }
           return res.writeHead(303, { Location: '/backup?restored=1' }).end();
         }
         throw new Problem('操作不支援。', 405);
@@ -1415,7 +1453,7 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
         return res.writeHead(303, { Location: '/schedule' }).end();
       }
       if (['/discover', '/discover/import', '/discover/retry', '/discover/continue', '/discover/removed'].includes(url.pathname) ||
-          /^\/discover\/[a-f0-9]{24}(?:\/(?:source|analyze))?$/.test(url.pathname)) {
+          /^\/discover\/[a-f0-9]{24}(?:\/(?:source|original|analyze))?$/.test(url.pathname)) {
         const registry = await discoveryRegistry();
         const base = await readSaved('activity-source.json') ?? await readSaved();
         const clock = now();
@@ -1457,13 +1495,17 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
           return res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8',
             'Content-Disposition': 'attachment; filename="announcement-source.txt"', 'X-Content-Type-Options': 'nosniff' }).end(html);
         }
+        if (subpage === 'original') {
+          if (req.method !== 'GET') throw new Problem('操作不支援。', 405);
+          return respond(200, originalPage(html, { title: entry.title, url: entry.url, route: '/discover/' + entry.id }));
+        }
         if (entry.kind !== 'version' || entry.active) {
           if (req.method !== 'GET') throw new Problem('請從對應活動核對這份公告。', 405);
           const evidence = entry.matches.map(block => '<article><pre>' + escape(block.text) + '</pre>' +
             block.activities.map(({ id, title, name }) => '<a href="/activities/' + id + '">' + escape(title ?? name) + '</a> ').join('') + '</article>').join('');
           return respond(200, page(entry.title, '<nav><a href="/discover">← 回公告探索</a></nav><h1>' + escape(entry.title) + '</h1>' +
             '<p><a href="' + escape(entry.url) + '">官方公告 ↗</a> · <a href="/discover/' + entry.id +
-            '/source" download>下載已保存來源</a></p>' + (entry.active ? '<p><a href="/activities">查看活動</a> · <a href="/review">核對拆分</a></p>' :
+            '/source" download>下載已保存來源</a> · <a href="/discover/' + entry.id + '/original">在網站查看官方公告原文</a></p>' + (entry.active ? '<p><a href="/activities">查看活動</a> · <a href="/review">核對拆分</a></p>' :
             '<p>來源已保存。期限更正可從<a href="/corrections">來源關聯與更正</a>核對。</p>') + evidence));
         }
         const document = reviewDocument(html);
@@ -1688,14 +1730,14 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
           if (previous?.model?.model && fingerprint(previous.notice) === fingerprint(notice) && previous.model.model === modelName(importProvider, importSettings) &&
               (previous.model.provider ?? 'gemini') === importProvider) {
             await save('status.json', JSON.stringify('公告內容未變，沿用已保存摘要。'));
-            return respond(200, home(previous, '核心寶石', now()));
+            return respond(200, home(previous, '', now()));
           }
           const generated = await summarize(notice, await generator(importProvider, importSettings));
           const summary = validate(generated?.result ?? generated, notice);
           const saved = { notice, summary, snapshot, capturedAt, model: generated?.metadata ?? null };
           await save('summary.json', JSON.stringify(saved, null, 2));
           await save('status.json', 'null');
-          return respond(200, home(saved, '核心寶石', now()));
+          return respond(200, home(saved, '', now()));
         } catch (error) {
           if (!(error instanceof Problem)) throw error;
           const status = (sourceSaved ? '已保存來源，摘要待更新。' : '本次來源取得未完成。') + error.message;
@@ -1769,7 +1811,7 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
         const bytes = await readData('image-' + record.version);
         return res.writeHead(200, { 'Content-Type': record.mime, 'X-Content-Type-Options': 'nosniff' }).end(bytes);
       }
-      if (url.pathname === '/review' || url.pathname === '/review/source') {
+      if (['/review', '/review/source', '/review/original'].includes(url.pathname)) {
         if (req.method === 'POST') {
           if (importing) throw new Problem('公告正在處理中。', 409);
           importing = methodLocked = true;
@@ -1780,6 +1822,10 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
         if (req.method === 'GET' && url.pathname === '/review/source') {
           return res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8',
             'Content-Disposition': 'attachment; filename="19129-source.txt"', 'X-Content-Type-Options': 'nosniff' }).end(html);
+        }
+        if (url.pathname === '/review/original') {
+          if (req.method !== 'GET') throw new Problem('操作不支援。', 405);
+          return respond(200, originalPage(html, { title: '公告 19129', url: official, route: '/review' }));
         }
         const document = reviewDocument(html);
         const previous = await readSaved('manual-split.json');

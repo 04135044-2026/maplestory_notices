@@ -5,7 +5,7 @@ const port = Number(process.env.PORT ?? 3181);
 const connectionString = process.env.MAPLE_DATABASE_URL;
 try {
   const store = connectionString ? await openPostgresStore({ connectionString, namespace: process.env.MAPLE_DATABASE_NAMESPACE }) : undefined;
-  const server = website({ store, enableSchedule: !store });
+  const server = website({ store, enableSchedule: !store || process.env.MAPLE_ENABLE_SCHEDULE === '1' });
   server.once('error', async () => {
     console.error('網站無法啟動，請確認指定的連接埠可用。');
     await store?.close();

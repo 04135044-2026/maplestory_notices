@@ -232,7 +232,7 @@ test('活動筆記分開呈現參加、開領和領獎期限，台灣時間邊�
 test('從活動入口核對取得方法，Gemini 只收到指定方法的適用來源', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'maple-catalog-'));
   const snapshot = '19129-test.html';
-  await writeFile(join(dir, snapshot), html);
+  await writeFile(join(dir, snapshot), html.replace('<p><img', '<p>領獎期間：2026/10/21 09:00 ～ 2026/12/01 23:59</p><p><img'));
   await writeFile(join(dir, 'summary.json'), JSON.stringify({ snapshot, capturedAt: '2026-11-12T08:24:49.046Z' }));
   let imageCalls = 0;
   let methodCalls = 0;
@@ -317,7 +317,7 @@ test('從活動入口核對取得方法，Gemini 只收到指定方法的適用�
     assert.match(home, /來源 · 星夜馬戲團/);
     assert.doesNotMatch(home, /搖滾音樂節幸運箱/);
     chairSearch.set('state', '已結束');
-    assert.match(await (await fetch(root + '/?' + chairSearch)).text(), /已收錄的公告 19129.*找不到/);
+    assert.match(await (await fetch(root + '/?' + chairSearch)).text(), /找不到符合的活動或目前可領取的獎勵/);
   } finally {
     if (server.listening) await new Promise(resolve => server.close(resolve));
     await rm(dir, { recursive: true, force: true });
@@ -375,7 +375,7 @@ test('網站保留補充來源，只有明示更正才更新參加期限', async
       body: new URLSearchParams({ method: method.id, id: editId, field: 'steps', text: '我的核對步驟', action }) });
     assert.equal((await edit('save')).status, 303);
     assert.match(await detail(), /個人修正[\s\S]*我的核對步驟/);
-    const rewardPage = await fetch(root + '/?' + new URLSearchParams({ q: item.title, type: '外觀與收藏' })).then(response => response.text());
+    const rewardPage = await fetch(root + '/?' + new URLSearchParams({ type: '外觀與收藏' })).then(response => response.text());
     const rewardId = rewardPage.match(/name="id" value="([a-f0-9]{64})"/)[1];
     for (const id of [item.id, rewardId]) {
       assert.equal((await fetch(root + '/watch', { method: 'POST', redirect: 'manual', body: new URLSearchParams({ id }) })).status, 303);

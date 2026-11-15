@@ -1,5 +1,5 @@
 import { methodContext } from './catalog.mjs';
-import { activityState, timeline } from './periods.mjs';
+import { activityState, isClaimable, timeline } from './periods.mjs';
 import { imageKey } from './images.mjs';
 
 export const rewardTypes = ['外觀與收藏', '成長與強化', '貨幣與點數', '其他'];
@@ -43,11 +43,12 @@ export function activityRewards(item, method) {
   return rewards;
 }
 
-export function searchCatalog(items, filters, now, images, { includeMethods = false } = {}) {
+export function searchCatalog(items, filters, now, images, { includeMethods = false, claimableRewards = false } = {}) {
   const { query, status, type } = filters;
   const needle = query.normalize('NFKC').toLocaleLowerCase('zh-TW');
   const match = name => name.normalize('NFKC').toLocaleLowerCase('zh-TW').includes(needle);
   const candidates = [];
+  let rewardQuery = false;
   for (const item of items) {
     const periods = timeline(item);
     const state = activityState(periods, now);
@@ -56,11 +57,14 @@ export function searchCatalog(items, filters, now, images, { includeMethods = fa
     for (const method of item.methods.filter(method => method.kind === 'method')) {
       const methodPeriods = timeline(item, method);
       const methodState = activityState(methodPeriods, now);
+      const rewards = activityRewards(item, method);
+      if (claimableRewards && query && rewards.some(reward => match(reward.name))) rewardQuery = true;
       if (status && methodState !== status) continue;
       if (!type && ((!query && includeMethods) || (query && !match(item.title) && match(method.title)))) {
         candidates.push({ item, method, state: methodState, periods: methodPeriods });
       }
-      for (const reward of activityRewards(item, method)) {
+      if (claimableRewards && !isClaimable(methodPeriods, now)) continue;
+      for (const reward of rewards) {
         if ((type && reward.type !== type) || (query && !match(reward.name))) continue;
         const image = [...method.images, ...(item.sharedImages ?? [])].map(imageKey)
           .find(key => images[key]?.appearance === reward.name && images[key]?.version && images[key]?.selected);
@@ -68,7 +72,7 @@ export function searchCatalog(items, filters, now, images, { includeMethods = fa
       }
     }
   }
-  return candidates.sort((a, b) => {
+  return (rewardQuery ? candidates.filter(entry => entry.reward) : candidates).sort((a, b) => {
     const priority = entry => entry.state === '已結束' ? 2 : entry.state === '時間待確認' ? 1 : 0;
     return priority(a) - priority(b) || (query ? Number(!a.reward) - Number(!b.reward) : 0);
   });
