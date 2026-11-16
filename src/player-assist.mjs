@@ -78,7 +78,8 @@ export async function searchWithAgent(query, candidates, ask) {
   if (!candidates.length) return { matches: [] };
   const choices = candidates.map(({ item, method, reward }, index) => ({
     id: 'S' + (index + 1), activity: item.title, method: method?.title ?? '', reward: reward?.name ?? '',
-    group: reward?.group ?? '', quantity: reward?.quantity ?? '',
+    group: reward?.group ?? '', quantity: reward?.quantity ?? '', category: reward?.category ?? '',
+    condition: reward?.condition ?? '',
   }));
   const { result, metadata } = await ask(
     '從已收錄的候選找出最符合搜尋句的活動、方法或獎勵，優先選最具體的項目。最多五項，按相關程度排列。沒有合理符合項目就回傳空陣列，勿猜測未收錄的獎勵。',

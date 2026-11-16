@@ -49,14 +49,11 @@ select,textarea{padding:.35rem .55rem}
 .home-grid{grid-template-columns:repeat(2,minmax(0,1fr));align-items:start}
 .home-grid details{margin:.55rem 0 0;padding:.45rem .6rem}
 .home-grid ul{margin:.5rem 0;padding-inline-start:1.4rem}
-.home-deadlines{margin:1.4rem 0;padding:.75rem 1rem;background:var(--panel);border:1px solid var(--line);border-radius:.65rem}
-.home-deadlines h2{margin:.15rem 0 .5rem;font-size:1.15rem}
-.home-deadlines ul{list-style:none;padding:0;margin:0}
-.home-deadlines>ul>li{padding:.3rem 0}
-.home-deadlines>ul>li+li{border-top:1px solid var(--line)}
+.home-deadlines{margin:1.4rem 0}
+.home-deadlines .deadline-list{list-style:none;padding:0;margin:0}
+.deadline-list>li{padding:.45rem 0}
+.deadline-list>li+li{border-top:1px solid var(--line)}
 .deadline-row{display:flex;justify-content:space-between;flex-wrap:wrap;gap:.2rem 1rem}
-.home-deadlines details{margin:.25rem 0;padding:.25rem .6rem}
-.home-deadlines details ul{list-style:disc;padding-inline-start:1.4rem}
 .home-deadlines time{color:var(--brand);font-variant-numeric:tabular-nums}
 .special-time-notes{color:var(--subtle);font-size:.9rem}
 .special-time-notes p{margin:.2rem 0 .4rem}

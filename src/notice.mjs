@@ -101,7 +101,7 @@ export async function generateSummary(instruction, input, properties, media = []
   let response;
   try {
     response = await fetchImpl('https://generativelanguage.googleapis.com/v1beta/models/' + model + ':generateContent', {
-      method: 'POST', signal: AbortSignal.timeout(60000),
+      method: 'POST', redirect: 'error', signal: AbortSignal.timeout(60000),
       headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key },
       body: JSON.stringify({
         systemInstruction: { parts: [{ text: instruction }] },

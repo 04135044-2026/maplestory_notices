@@ -10,6 +10,7 @@ import { eligibilityLabel } from './segmentation.mjs';
 import { fetchOfficialImage, imageKey, recognizeImage } from './images.mjs';
 import { fingerprint, methodFingerprint, sourceReferences, summaryForDisplay } from './incremental.mjs';
 import { createCodexGenerator } from './codex.mjs';
+import { createGeminiCredentials } from './gemini-credentials.mjs';
 import { generateWith, isProvider, modelFields, modelName, providerLabels, publicModelSettings } from './model-providers.mjs';
 import { fetchCorrection, officialCorrectionUrl, verifiedSource, withCorrections } from './corrections.mjs';
 import { activityState, periodText, timeline, versionPeriod } from './periods.mjs';
@@ -300,30 +301,35 @@ function homeActivities(entries, now) {
   const groupedDeadlines = new Map();
   for (const entry of deadlines) {
     const { item, label, end } = entry;
-    const key = JSON.stringify([familyTitle(item), label, end.date, end.exact]);
-    if (!groupedDeadlines.has(key)) groupedDeadlines.set(key, []);
-    groupedDeadlines.get(key).push(entry);
+    const title = familyTitle(item);
+    if (!groupedDeadlines.has(title)) groupedDeadlines.set(title, new Map());
+    const dates = groupedDeadlines.get(title);
+    const key = JSON.stringify([label, end.date, end.exact]);
+    if (!dates.has(key)) dates.set(key, []);
+    dates.get(key).push(entry);
   }
   const clock = new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Taipei', hourCycle: 'h23',
     hour: '2-digit', minute: '2-digit' });
-  const agenda = deadlines.length ? '<section class="home-deadlines"><h2>近期截止</h2><ul>' +
-    [...groupedDeadlines.values()].map(members => {
+  const agenda = deadlines.length ? '<section class="home-deadlines"><h2>近期截止</h2><div class="activity-grid home-grid">' +
+    [...groupedDeadlines].map(([title, dates]) => {
+      const rows = [...dates.values()].map(members => {
       const { item, label, end } = members[0];
-      const title = familyTitle(item);
       const href = '/activities/' + item.id;
       const wholeActivity = members.length === 1 && !members[0].method && item.title === title;
       const children = members.filter(entry => entry.method || !members.some(other => other.item === entry.item && other.method));
       const day = end.date.slice(5).replace('-', '/');
       const exact = end.exact !== null;
-      return '<li><div class="deadline-row">' + (wholeActivity ? '<a href="' + href + '">' + escape(title) + '</a>' :
-        '<strong>' + escape(title) + '</strong>') + '<span>' + label + ' · <time datetime="' +
+      return '<li><div class="deadline-row">' + (wholeActivity ? '<a href="' + href + '">' + label + '</a>' :
+        '<span>' + label + '</span>') + '<time datetime="' +
         (exact ? new Date(end.exact).toISOString() : end.date) + '">' + day + (exact ? ' ' + clock.format(end.exact) : '') +
-        '</time></span></div>' + (wholeActivity ? '' :
+        '</time></div>' + (wholeActivity ? '' :
           '<details><summary>查看 ' + children.length + ' 個子活動</summary><ul>' + children.map(({ item, method, title }) =>
             '<li><a href="/activities/' + item.id + (method ? '#' + method.id : '') + '">' +
             escape(title) + '</a>' + specialTimeNotes(item, method) + '</li>').join('') + '</ul></details>') + '</li>';
-    }).join('') +
-    '</ul></section>' : '';
+      }).join('');
+      return '<article data-tone="' + familyTone(title) + '"><h3>' + escape(title) +
+        '</h3><ul class="deadline-list">' + rows + '</ul></article>';
+    }).join('') + '</div></section>' : '';
   return agenda + '<section class="home-activities"><h2>活動一覽(進行中)</h2>' +
     (groups.length ? grid(groups) : '<p>目前沒有進行中或仍可領獎的活動。</p>') + '</section>';
 }
@@ -339,7 +345,7 @@ function watchButton(entry, watches, back) {
 
 function catalogResults(entries, saved, watches, back = '/') {
   if (!entries.length) return '<p>找不到符合的活動或目前可領取的獎勵。</p>';
-  return activityGroups(entries, entry => entry.item, ({ item, method: target, reward, state, periods, image }) => {
+  return activityGroups(entries, entry => entry.item, ({ item, method: target, reward, state, periods, image, availability }) => {
     const legacy = saved && reward && item.title === activity && target.title === method &&
       matchingRewards(saved.notice, reward.name).some(entry => entry.name === reward.name && entry.quantity === reward.quantity);
     const href = legacy ? '/note?q=' + encodeURIComponent(reward.name) + '#method' :
@@ -347,9 +353,12 @@ function catalogResults(entries, saved, watches, back = '/') {
     const title = reward ? reward.name + (reward.quantity ? ' ×' + reward.quantity : '') : target?.title ?? item.title;
     return '<article>' + eventLabel(item) + '<h3><a href="' + href + '">' + escape(title) + '</a></h3>' +
       (reward ? '<p>' + escape(item.title + ' › ' + target.title) + ' · ' + escape(reward.type) +
-        (reward.group ? ' · ' + escape(reward.group) : '') + (reward.possible ? ' · 可能獎勵' : '') + '</p>' : '') +
+        (reward.group ? ' · ' + escape(reward.group) : '') + (reward.category ? ' · ' + escape(reward.category) : '') +
+        (reward.possible ? ' · 可能獎勵' : '') + '</p>' +
+        (reward.condition ? '<p>取得條件 · ' + escape(reward.condition) + '</p>' : '') : '') +
       '<p>' + escape(state) + ' · ' + escape(periodText(periods.participation)) + '</p>' +
-      ((state === '仍可領獎' || reward && periods.claim.source) ? '<p>領獎期限 · ' + escape(periodText(periods.claim)) + '</p>' : '') +
+      (availability === 'participation' ? '<p>依活動期間顯示 · 公告未列獨立領獎期限</p>' :
+        (state === '仍可領獎' || reward && periods.claim.source) ? '<p>領獎期限 · ' + escape(periodText(periods.claim)) + '</p>' : '') +
       '<p>來源 · ' + escape(item.pageTitle) + (item.officialUrl ? '' : '（19129）') + '</p>' +
       (image ? '<img loading="lazy" style="max-width:160px" src="/images/' + image + '" alt="' + escape(reward.name) + '">' :
         reward ? '<p>尚無外觀圖片</p>' : '') +
@@ -503,7 +512,7 @@ function managementPage(saved, status, hasSnapshot) {
 function home(saved, query, now, hasSnapshot = Boolean(saved), listing, assist, semanticEnabled = false) {
   const hasSearch = query || listing?.filters.status || listing?.filters.type || listing?.filters.watched;
   const entries = listing ? searchCatalog(listing.items, listing.filters, now, listing.images,
-    { includeMethods: listing.filters.watched, claimableRewards: Boolean(query) }).filter(entry => !listing.filters.watched ||
+    { includeMethods: listing.filters.watched, onlyAvailable: Boolean(query) }).filter(entry => !listing.filters.watched ||
       ((!entry.method || entry.reward) && listing.watches[watchKey(entry)])) : [];
   const back = listing?.back ?? '/';
   const offerAssist = listing && query && (!entries.length || entries.length > 8 || assist);
@@ -978,7 +987,7 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
   summarizeActivityMethod = summarizeMethod, downloadImage = fetchOfficialImage, summarizeImage = recognizeImage,
   codexGenerate = createCodexGenerator(), fetchLinkedSource = fetchCorrection, generatePlayerAssistance,
   openAnnouncementPages = officialPages, fetchAnnouncement = officialAnnouncement,
-  store, providerFetch = fetch, embeddingFetch = fetch, embeddingModel = defaultEmbeddingModel, analyzeNotice, enableNoticeAnalysis = Boolean(analyzeNotice), enableSchedule = false, scheduleInterval = 30000 } = {}) {
+  store, credentialStore = createGeminiCredentials({ dir }), providerFetch = fetch, embeddingFetch = fetch, embeddingModel = defaultEmbeddingModel, analyzeNotice, enableNoticeAnalysis = Boolean(analyzeNotice), enableSchedule = false, scheduleInterval = 30000 } = {}) {
   let importing = false;
   const dataContext = new AsyncLocalStorage();
   let activeDirectory;
@@ -1096,20 +1105,15 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
     catch (error) { if (!(error instanceof Problem)) throw error; items = []; }
     return applyCorrections([...mergeManual(items, confirmed), ...extra]);
   }
-  const credentialPath = join(dir, 'local-model-credentials.json');
   async function modelSettings() {
     return publicModelSettings(await readSaved('model-preferences.json'));
   }
   async function preferredProvider() {
     return (await modelSettings()).provider;
   }
-  async function credentials() {
-    try { return JSON.parse(await readFile(credentialPath, 'utf8')); }
-    catch (error) { if (error.code !== 'ENOENT') throw error; return {}; }
-  }
   async function generator(provider, settings, testKey) {
     const preferences = settings ?? await modelSettings();
-    const geminiKey = provider === 'gemini' ? testKey || (await credentials()).geminiKey : undefined;
+    const geminiKey = provider === 'gemini' ? testKey || await credentialStore.read() : undefined;
     return generateWith(provider, { ...preferences, geminiKey }, codexGenerate, providerFetch);
   }
   async function askWith(provider) {
@@ -1810,7 +1814,7 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
             '<label>' + label + ' <input name="' + field + '" value="' + escape(settings[field] ?? '') +
             '" placeholder="' + escape(placeholder ?? '') + '" maxlength="160"></label> ').join('') +
           '<label>Gemini API 金鑰 <input type="password" name="geminiKey" autocomplete="new-password" maxlength="512"></label> ' +
-          '<small>留白沿用目前金鑰。</small> <button name="action" value="save">保存長期預設</button> ' +
+          '<small>留白沿用目前金鑰。保存後由 Windows 加密存放於本機。</small> <button name="action" value="save">保存長期預設</button> ' +
           '<button name="action" value="test">測試所選模型</button></form>' +
           (pendingBatch?.ids.length ? '<form method="post" action="/activities/' + pendingBatch.activity + '/batch"><p>' +
             escape(pendingBatch.message) + '</p>' + pendingBatch.ids.map(id =>
@@ -1841,11 +1845,7 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
           return respond(200, page('模型連線測試', '<h1>連線測試成功</h1><p>' + providerLabels[provider] +
             ' 可回傳結構化輸出。這次測試沒有保存設定。</p><p><a href="/updates">回到設定</a></p>'));
         }
-        if (geminiKey) {
-          await mkdir(dir, { recursive: true });
-          await writeFile(credentialPath + '.tmp', JSON.stringify({ geminiKey }), { mode: 0o600 });
-          await rename(credentialPath + '.tmp', credentialPath);
-        }
+        if (geminiKey) await credentialStore.save(geminiKey);
         await save('model-preferences.json', JSON.stringify(settings));
         return res.writeHead(303, { Location: '/updates' }).end();
       }
@@ -1997,7 +1997,7 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
           try {
             if (!query || query.length > 200) throw new Problem('請輸入 1–200 字的搜尋句。');
             const candidates = listing ? searchCatalog(items, { ...listing.filters, query: '' }, now(), listing.images,
-              { includeMethods: true }).filter(entry => !listing.filters.watched || listing.watches[watchKey(entry)]) : [];
+              { includeMethods: true, onlyAvailable: true }).filter(entry => !listing.filters.watched || listing.watches[watchKey(entry)]) : [];
             lockModel();
             assist = await searchWithAgent(query, candidates, await askWith());
           } catch (error) {

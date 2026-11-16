@@ -109,6 +109,8 @@ export function timeline(item, method) {
     claim: claim.change ? claim : corrected(claim, localClaim && method ? null : item.changes?.claim),
     opening: localOpen ? range(localOpen, sourceYears, bounds) :
       localClaim && claim.start ? { source: null } : base?.opening ?? { source: null },
+    deferredClaim: Boolean(base?.deferredClaim || own.some(source => !source.rows &&
+      /(?:活動|賽季|期間|排名|排行|統計)(?:結束|結算|統計)後[^。；\n]{0,100}(?:領取|領獎|發放|給予)|(?:領取|領獎|發放)(?:時間|日期|方式)?[^。；\n]{0,30}另行(?:公告|通知|公布)/.test(source.text))),
     effect: range(effect, sourceYears, deadlineBounds),
     makeup: method ? [...(base.makeup ?? []), ...makeup.filter(rule => !base.makeup.some(entry => entry.source.id === rule.source.id))] : makeup,
     resets: own.filter(source => !source.rows && /初始化|重置/.test(source.text)),
@@ -122,14 +124,21 @@ function compare(point, now) {
   return today === point.date ? null : today < point.date ? -1 : 1;
 }
 
-export function isClaimable({ claim, opening, participation }, now) {
-  if (opening.source && !opening.start) return false;
-  const starts = [claim.start, opening.start].filter(Boolean);
-  if (!starts.length && participation.start) starts.push(participation.start);
-  return starts.length > 0 && starts.every(point => {
+export function rewardAvailability({ claim, opening, participation, deferredClaim }, now) {
+  const started = point => {
     const order = compare(point, now);
     return order !== null && order >= 0;
-  }) && compare(claim.end, now) === -1;
+  };
+  if (!claim.source && !claim.end && !opening.source && !opening.start) {
+    if (deferredClaim) return null;
+    const periods = participation.phases ?? [participation];
+    return participation.permanent || periods.some(period =>
+      started(period.start) && compare(period.end, now) === -1) ? 'participation' : null;
+  }
+  if (opening.source && !opening.start) return null;
+  const starts = [claim.start, opening.start].filter(Boolean);
+  if (!starts.length && participation.start) starts.push(participation.start);
+  return starts.length > 0 && starts.every(started) && compare(claim.end, now) === -1 ? 'claim' : null;
 }
 
 export function activityState(periods, now) {

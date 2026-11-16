@@ -3,3 +3,9 @@
 !.env.example
 /data/
 /node_modules/
+/.scratch/
+/docs/
+/AGENTS.md
+/GLOSSARY.md
+/SPEC.md
+/maplestory-notice-ticket-draft.md

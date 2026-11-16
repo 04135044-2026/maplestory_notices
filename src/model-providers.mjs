@@ -31,7 +31,7 @@ export function generateWith(provider, settings, codexGenerate, fetchImpl = fetc
     }
     if (provider !== 'ollama') {
       return generateSummary(instruction, input, properties, media, {
-        key: settings.geminiKey || process.env.GEMINI_API_KEY, model, fetchImpl,
+        key: settings.geminiKey ?? null, model, fetchImpl,
       });
     }
     if (!model) throw new Problem('請先選擇本機 Ollama 模型。');
