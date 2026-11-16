@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -27,9 +27,9 @@ test('公告探索自動分析、保留最新成功活動，首次不完整可�
       const [title, dates] = input.blocks;
       calls.push(title.text);
       if (title.text === '過時並行活動') { held(); await hold; }
-      return { result: { complete: ['第一版活動', '過時並行活動', '最後新版活動'].includes(title.text), notes: [{ title: title.text, source: title.id,
+      return { result: { complete: ['第一版活動', '模型漏掉日期', '過時並行活動', '最後新版活動'].includes(title.text), notes: [{ title: title.text, source: title.id,
         methods: [{ title: '參加方法', source: title.id,
-          facts: [{ kind: 'participation', text: dates.text, source: dates.id }] }] }] } };
+          facts: title.text === '模型漏掉日期' ? [] : [{ kind: 'participation', text: dates.text, source: dates.id }] }] }] } };
     },
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
@@ -65,6 +65,10 @@ test('公告探索自動分析、保留最新成功活動，首次不完整可�
   assert.match(await get('/activities'), /第一版活動/);
   assert.doesNotMatch(await get('/activities'), /第二版缺漏活動/);
   assert.match(await get(anchor.split('#')[0]), /第一版活動/);
+  label = '模型漏掉日期';
+  await save(official);
+  await until(detail, /整理未完成/);
+  assert.doesNotMatch(await get('/activities'), /模型漏掉日期/);
   const partial = await save(official.replace('19999', '19998'));
   await until(partial, /整理未完成/);
   assert.match(await get('/activities'), /首次部分活動/);
@@ -77,7 +81,7 @@ test('公告探索自動分析、保留最新成功活動，首次不完整可�
   const latest = await until('/activities', /最後新版活動/);
   assert.doesNotMatch(latest, /過時並行活動/);
   assert.match(await get(detail), /分析紀錄/);
-  assert.deepEqual(calls, ['第一版活動', '第二版缺漏活動', '首次部分活動', '過時並行活動', '最後新版活動']);
+  assert.deepEqual(calls, ['第一版活動', '第二版缺漏活動', '模型漏掉日期', '首次部分活動', '過時並行活動', '最後新版活動']);
 });
 
 test('語意搜尋使用目前快照並連回原文，Ollama 中斷時名稱搜尋仍可使用', {
@@ -139,4 +143,35 @@ test('語意搜尋使用目前快照並連回原文，Ollama 中斷時名稱搜�
   offline = true;
   assert.match(await ask(), /語意搜尋暫不可用/);
   assert.equal((await fetch(base + '/?q=簽到')).status, 200);
+});
+
+test('來源保存後若在排入分析之前中斷，重啟會找回待分析的公告', async t => {
+  const dir = await mkdtemp(join(tmpdir(), 'maple-analysis-recovery-'));
+  const snapshot = '19129-recovery.html';
+  await writeFile(join(dir, snapshot), page('中斷後恢復的活動'));
+  // 模擬快照與分析意圖已寫入，但工作清單還來不及更新。
+  await writeFile(join(dir, 'activity-source.json'), JSON.stringify({ snapshot, analysisRequest: {} }));
+  let calls = 0;
+  const server = website({ dir, analyzeNotice: async (_instruction, { blocks: [heading, dates] }) => {
+    calls++;
+    return { result: { complete: true, notes: [{ title: heading.text, source: heading.id,
+      methods: [{ title: '參加方法', source: heading.id, facts: [
+        { kind: 'participation', text: dates.text, source: dates.id },
+      ] }],
+    }] } };
+  } });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(async () => {
+    await new Promise(resolve => server.close(resolve));
+    await rm(dir, { recursive: true, force: true });
+  });
+  const url = 'http://127.0.0.1:' + server.address().port + '/activities';
+  for (let i = 0; i < 100; i++) {
+    if ((await (await fetch(url)).text()).includes('中斷後恢復的活動')) {
+      assert.equal(calls, 1);
+      return;
+    }
+    await delay(20);
+  }
+  assert.fail('重啟後仍無法查閱待分析公告的活動筆記');
 });
