@@ -46,6 +46,14 @@ node --env-file-if-exists=.env src/start.mjs
 
 ## Windows 原生 PostgreSQL 與 pgAdmin
 
+已切換到 Windows 原生資料庫後，在專案資料夾開啟 PowerShell，執行：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\start-native.ps1
+```
+
+輸入 `maple_app` 的 PostgreSQL 密碼，看到 `http://127.0.0.1:3211` 後再開啟網站。腳本使用原生資料庫 `127.0.0.1:5433/maple_native` 和既有的 `maple-trial-01` 資料集。執行原則參數只套用到這次啟動的 PowerShell 程序。要停止網站，在該視窗按 `Ctrl+C`。
+
 1. 使用 [PostgreSQL Windows 安裝程式](https://www.postgresql.org/download/windows/)，選擇 PostgreSQL 18、pgAdmin 4 與命令列工具。若原 Docker 資料庫使用 `5432`，將原生服務設為 `5433`。自行設定管理員密碼，安裝完成後可在 Windows「服務」查看及啟停 PostgreSQL。
 2. 依 [pgvector Windows 安裝說明](https://github.com/pgvector/pgvector#windows) 使用 Visual Studio 的 C++ 工具編譯並安裝相同主版本的擴充套件。用 pgAdmin 連線 `127.0.0.1:5433`，建立專案登入角色及由該角色擁有的資料庫。以資料庫管理員在該資料庫執行 `CREATE EXTENSION IF NOT EXISTS vector;`，再用 `SELECT extversion FROM pg_extension WHERE extname = 'vector';` 確認已啟用。
 3. 在舊站「備份與還原」下載 JSON 備份。另開 PowerShell，設定 `MAPLE_DATABASE_URL` 指向新資料庫、`MAPLE_DATABASE_NAMESPACE` 為 `maple-trial-01`，並以 `PORT=3212` 啟動試用站。從試用站「備份與還原」上傳 JSON；核對公告原文、活動筆記、關注、人工修正和圖片獎勵。語意搜尋另用一個沒有關鍵字命中的口語句確認 Ollama 和 pgvector 都能回應。
