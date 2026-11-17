@@ -16,12 +16,40 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 `;
 
+export const buttonEffects = `
+const actions = 'button, .site-tabs a, .note-toolbar a, .official-button, .search-home-link, .action-link, .calendar-count';
+
+function wrapActionLabel(action) {
+  for (const node of [...action.childNodes]) {
+    if (node.nodeType !== Node.TEXT_NODE || !node.textContent.trim()) continue;
+    const label = document.createElement('span');
+    label.className = 'action-label';
+    node.replaceWith(label);
+    label.append(node);
+  }
+}
+
+function prepareActions(root) {
+  if (root.matches(actions)) wrapActionLabel(root);
+  root.querySelectorAll(actions).forEach(wrapActionLabel);
+}
+
+prepareActions(document.body);
+new MutationObserver(records => {
+  for (const record of records) {
+    for (const node of record.addedNodes) {
+      if (node instanceof HTMLElement) prepareActions(node);
+    }
+  }
+}).observe(document.body, { childList: true, subtree: true });
+`;
+
 export const siteAppearance = `
 :root{color-scheme:light dark;--page:light-dark(#f5f6fa,#0e1016);--panel:light-dark(#fff,#171a24);
   --control:light-dark(#fff,#232737);--line:light-dark(#d4d9e5,#3a4053);--ink:light-dark(#202537,#f6f4fb);
   --subtle:light-dark(#525e76,#b9c2d6);--link:light-dark(#383986,#ccc3ff);--brand:light-dark(#91420e,#ffb46f);
   --selected:light-dark(#e8e8f8,#30354b);--empty:light-dark(#edf0f5,#11141d);
-  --focus:light-dark(#4545ab,#c5b9ff)}
+  --focus:light-dark(#4545ab,#c5b9ff);--action-hover:light-dark(#e2e7fa,#39446a);--action-hover-text:light-dark(#1d2851,#f4f6ff)}
 :root[data-theme=light]{color-scheme:light}
 :root[data-theme=dark]{color-scheme:dark}
 body{background:var(--page);color:var(--ink);font-size:16px}
@@ -37,7 +65,25 @@ select,textarea{padding:.35rem .55rem}
 .site-header>a{color:var(--brand);font-weight:750;text-decoration:none}
 .site-header label{color:var(--subtle);font-size:.9rem}
 .site-tabs,.activity-nav{border-color:var(--line)}
-.site-tabs a[aria-current=page]{background:var(--selected);color:var(--ink)}
+.site-tabs a[aria-current=page]{background:var(--selected);color:var(--ink);box-shadow:inset 0 -2px var(--focus)}
+.action-link{display:inline-block;padding:.3rem .6rem;border:1px solid var(--line);border-radius:.45rem;
+  background:var(--control);color:var(--ink);text-decoration:none;max-width:100%;box-sizing:border-box}
+:is(button,.site-tabs a,.note-toolbar a,.official-button,.search-home-link,.action-link,.calendar-count){transition:background-color 140ms ease,color 140ms ease}
+.action-label{display:inline-block;max-width:100%;transition:transform 140ms ease;transform-origin:center}
+:is(button:enabled,.site-tabs a,.note-toolbar a,.official-button,.search-home-link,.action-link,.calendar-count):is(:hover,:focus-visible){
+  background:var(--action-hover);color:var(--action-hover-text);text-decoration:none}
+:is(button:enabled,.site-tabs a,.note-toolbar a,.official-button,.search-home-link,.action-link,.calendar-count):is(:hover,:focus-visible)>.action-label{transform:scale(1.06)}
+input[type=file]::file-selector-button{box-sizing:border-box;inline-size:8rem;block-size:2.35rem;padding:0 .3rem;
+  color:var(--ink);background:var(--control);border:1px solid var(--line);border-radius:.45rem;font:inherit;
+  transition:background-color 140ms ease,color 140ms ease}
+input[type=file]:enabled:is(:hover,:focus-visible)::file-selector-button{
+  color:var(--action-hover-text);background:var(--action-hover);font-size:1.06em}
+@media(prefers-reduced-motion:reduce){
+  :is(button,.site-tabs a,.note-toolbar a,.official-button,.search-home-link,.action-link,.calendar-count),.action-label,
+  input[type=file]::file-selector-button{transition:none}
+  :is(button:enabled,.site-tabs a,.note-toolbar a,.official-button,.search-home-link,.action-link,.calendar-count):is(:hover,:focus-visible)>.action-label{transform:none}
+  input[type=file]:enabled:is(:hover,:focus-visible)::file-selector-button{font-size:inherit}
+}
 .activity-nav{background:var(--page)}
 .event-label{border-color:var(--line);color:var(--subtle)}
 .source-table td,.source-table th{border-color:var(--line)}

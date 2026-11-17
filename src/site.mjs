@@ -19,7 +19,7 @@ import { watchKey, watchVersion } from './watch.mjs';
 import { editChanged, editEvidence, editKey } from './manual-edits.mjs';
 import { calendarActivity, calendarExportChanged, calendarExportRecord, calendarMonth, exportCalendar } from './calendar.mjs';
 import { issueIndex } from './known-issues.mjs';
-import { answerPlayer, compareMethods, playerAssistant, searchWithAgent } from './player-assist.mjs';
+import { answerPlayer, playerAssistant, searchWithAgent } from './player-assist.mjs';
 import { announcementUrl, collectAnnouncements, discoveryWindow, officialAnnouncement, officialPages, saveAnnouncement } from './discovery.mjs';
 import { sourceTracking } from './tracking.mjs';
 import { jobFailure, METHOD_BATCH, SOURCE_BATCH, sourceAttempt } from './jobs.mjs';
@@ -28,7 +28,7 @@ import { defaultEmbeddingModel, rankByEmbedding, semanticDocuments, semanticSear
 import { analysisFile, analyzedItems, analyzeSnapshot, fieldLabels, primaryNotice, sourceRoute } from './notice-analysis.mjs';
 import { officialImageOrigins, originalBlocks } from './original-source.mjs';
 import { activeDataDirectory, createBackup, readBackupUpload, restoreBackup } from './backup.mjs';
-import { siteAppearance, themeControl } from './site-appearance.mjs';
+import { buttonEffects, siteAppearance, themeControl } from './site-appearance.mjs';
 
 const escape = value => String(value).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]);
 const link = '<a href="' + official + '" target="_blank" rel="noopener noreferrer">查看官方公告 ↗</a>';
@@ -51,6 +51,13 @@ summary{cursor:pointer;font-weight:700}
 .search-results form{margin-bottom:.25rem}
 .activity-family>details{padding:.65rem .8rem}
 .ended-activities{margin-top:2rem;padding-top:.6rem;border-top:2px solid var(--line,#d9e1d7)}
+.note-meta,.note-toolbar{display:flex;align-items:center;flex-wrap:wrap;gap:.45rem .65rem}
+.note-toolbar{margin:.65rem 0 1rem}
+.note-toolbar form{margin:0}
+.note-toolbar a,.note-toolbar button{display:inline-flex;align-items:center;gap:.4rem;padding:.35rem .65rem;border:1px solid var(--line);border-radius:.5rem;background:var(--control);color:var(--ink);font:inherit;font-size:.9rem;text-decoration:none}
+.note-toolbar .note-ask{background:var(--link);color:var(--panel);border-color:transparent}
+.note-toolbar .note-manage{background:transparent;border-color:transparent;color:var(--link)}
+.note-status,.issue-count{padding:.1rem .45rem;border-radius:1rem;background:var(--selected);color:var(--ink);font-size:.8rem}
 .event-label{display:inline-block;border:1px solid #cfdad2;border-radius:.4rem;padding:.05rem .4rem;color:#405449;font-size:.82rem}
 .image-preview{border:0;padding:0;margin:.5rem 0;background:transparent}
 .image-preview img{display:block;max-width:100%;width:auto;height:auto;max-height:min(65vh,30rem);object-fit:contain;margin:.6rem 0}
@@ -67,9 +74,6 @@ main :target{scroll-margin-top:4rem}
 .player-question{display:grid;gap:.5rem}
 .player-question textarea{box-sizing:border-box;width:100%;font:inherit}
 .player-question button{justify-self:start}
-.comparison{overflow-x:auto}
-.comparison td{min-width:13rem}
-.comparison-select{display:block;width:100%;max-width:100%;font:inherit}
 .evidence-image{display:block;max-width:100%;height:auto}
 .site-tabs{display:flex;flex-wrap:wrap;gap:.4rem;border-bottom:1px solid #cddbd3;padding-bottom:.35rem}
 .site-tabs a{padding:.35rem .65rem;border-radius:.35rem;text-decoration:none}
@@ -100,7 +104,7 @@ main:has(.calendar-layout){max-width:82rem}
 .calendar-today-label{position:absolute;top:0;left:50%;transform:translate(-50%,-40%);padding:0 .5rem;border-radius:1rem;background:#14532d;color:white;font-size:.78rem;font-weight:700;white-space:nowrap;pointer-events:none}
 `;
 const page = (title, body) => '<!doctype html><html lang="zh-Hant"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>' + escape(title) +
-  '</title><script src="/theme.js"></script><style>' + style + layout + siteAppearance + '</style>' +
+  '</title><script src="/theme.js"></script><script src="/button-effects.js" defer></script><style>' + style + layout + siteAppearance + '</style>' +
   '<header class="site-header"><a href="/">🍁 楓之谷公告懶人包</a><label>外觀 <select id="site-theme">' +
   '<option value="system">跟隨系統</option><option value="light">淺色</option><option value="dark">深色</option></select></label></header><main>' + body + '</main></html>';
 const imageActions = `
@@ -213,7 +217,7 @@ function searchResults(saved, query, now) {
   const href = query ? '/note?q=' + encodeURIComponent(query) + '#method' : '/note#method';
   return rewards.map(({ name, quantity, level }) => '<article><h2>' + escape(name) + ' ×' + escape(quantity) +
     '／次</h2><p>' + activity + ' › ' + method + ' · ' + escape(level) + '</p><p>' + time.status +
-    ' · ' + time.text + '</p><a href="' + href + '">查看取得方式 →</a></article>').join('');
+    ' · ' + time.text + '</p><a class="action-link" href="' + href + '">查看取得方式 →</a></article>').join('');
 }
 
 function filterOptions(name, values, value, label) {
@@ -367,7 +371,7 @@ function catalogResults(entries, saved, watches, back = '/', flat = false) {
       '<p>來源 · ' + escape(item.pageTitle) + (item.officialUrl ? '' : '（19129）') + '</p>' +
       (image ? '<img loading="lazy" style="max-width:160px" src="/images/' + image + '" alt="' + escape(reward.name) + '">' :
         reward ? '<p>尚無外觀圖片</p>' : '') +
-      '<p><a href="' + href + '">' + (reward ? '查看取得方式 →' : '查看活動 →') + '</a></p>' +
+      '<p><a class="action-link" href="' + href + '">' + (reward ? '查看取得方式 →' : '查看活動 →') + '</a></p>' +
       (watches ? watchButton({ item, method: target, reward }, watches, back) : '') + '</article>';
   };
   return flat ? '<div class="activity-grid search-results">' + entries.map(render).join('') + '</div>' :
@@ -855,29 +859,6 @@ questionForm?.addEventListener('submit', async event => {
 });
 `;
 
-const activityMethods = items => items.flatMap(item => item.methods.filter(method => method.kind === 'method')
-  .map(method => ({ item, method })));
-const methodLabel = ({ item, method }) => item.title + ' › ' + method.title;
-
-function comparisonPage(methods, from, selections = [], result, error) {
-  const back = from ? '/activities/' + from.id : '/activities';
-  const fields = ['第一種方式', '第二種方式'].map((label, index) =>
-    '<p><label>' + label + '<select class="comparison-select" name="method" required><option value="">請選擇</option>' +
-    methods.map(entry => '<option value="' + entry.method.id + '"' + (selections[index] === entry.method.id ? ' selected' : '') +
-      '>' + escape(methodLabel(entry)) + '</option>').join('') + '</select></label></p>').join('');
-  const output = result ? '<h2>比較結果</h2><div class="source-table comparison" tabindex="0" role="region" aria-label="取得方式比較">' +
-    '<table><thead><tr><th scope="col">項目</th>' + selections.map(id => '<th scope="col">' +
-    escape(methodLabel(methods.find(entry => entry.method.id === id))) + '</th>').join('') + '</tr></thead><tbody>' +
-    result.rows.map(row => '<tr><th scope="row">' + escape(row.label) + '</th>' +
-      row.cells.map(facts => '<td>' + assistantFacts(facts) + '</td>').join('') + '</tr>').join('') +
-    '</tbody></table></div>' + assistantModel(result.metadata) + assistantEvidence(result.rows.flatMap(row => row.cells.flat())) : '';
-  return page('比較取得方式', '<nav><a href="' + back + '">← 返回活動</a></nav><h1>比較取得方式</h1>' +
-    (methods.length < 2 ? '<p>目前可比較的方法少於兩種。</p>' : '<form method="post" action="/compare">' +
-    (from ? '<input type="hidden" name="activity" value="' + from.id + '">' : '') +
-    fields + '<button>用 Agent 比較</button></form>') +
-    (error ? '<p role="alert">' + escape(error) + '</p>' : '') + output);
-}
-
 function activityDetail(item, now, summaries = {}, status = '', imageRecords = {}, watches, edits = {}, issues = [], movedGroups = [], { draftImage, agentReply, managing = false } = {}) {
   const activityPath = '/activities/' + item.id;
   const managePath = activityPath + '/manage';
@@ -1010,14 +991,21 @@ function activityDetail(item, now, summaries = {}, status = '', imageRecords = {
   const shared = managing ? originalFlow(item.sources, item.images, '活動共用表格與圖片') :
     imagesFor(item.images.filter(isSelected));
   const imageNotes = verifiedImageSources(item, imageRecords);
-  return page(item.title, activityNav('/activities', '← 全部活動', item.title, item.officialUrl) + eventLabel(item) + '<h1>' + escape(item.title) + '</h1>' +
+  const state = activityState(periods, now);
+  const knownCount = issues.filter(issue => issue.state === 'known').length;
+  const fixedCount = issues.filter(issue => issue.state === 'fixed').length;
+  const issueCount = knownCount + fixedCount;
+  return page(item.title, activityNav('/activities', '← 全部活動', item.title, item.officialUrl) +
+    '<div class="note-meta">' + eventLabel(item) + '<span class="note-status">' + state + '</span></div><h1>' + escape(item.title) + '</h1>' +
     (managing ? '<p><a href="' + activityPath + '">← 回活動筆記</a> · <a href="/manage">公告管理</a> · ' +
       '<a href="' + (item.announcement ? item.announcement.href : item.discoverySnapshot ? '/discover' : '/review') + '">查看公告來源與拆分</a></p>' :
-      '<p><a href="' + managePath + '">管理筆記</a></p>') +
-    (watches ? watchButton({ item }, watches, '/activities/' + item.id) : '') +
-    (issues.length ? '<p>這個活動有 ' + issues.length + ' 筆官方問題紀錄。 <a href="/issues?activity=' + item.id +
-      '">查看相關問題</a></p>' : '') + '<p>' +
-    activityState(periods, now) + ' · <a href="#player-tools">詢問 Agent</a></p>' + (status ? '<p role="status">' + escape(status) + '</p>' : '') +
+      '') +
+    (managing ? '' : '<div class="note-toolbar">' + (watches ? watchButton({ item }, watches, activityPath) : '') +
+    '<a href="/issues?activity=' + item.id + '" aria-label="查看相關問題，已知 ' + knownCount + ' 筆，已修復 ' +
+    fixedCount + ' 筆">查看相關問題 <span class="issue-count">' + issueCount + '</span></a>' +
+    '<a class="note-ask" href="#player-tools">詢問 Agent <span aria-hidden="true">↓</span></a>' +
+    '<a class="note-manage" href="' + managePath + '">管理筆記 <span aria-hidden="true">›</span></a></div>') +
+    (status ? '<p role="status">' + escape(status) + '</p>' : '') +
     (managing ? analysisNote(item) : '<h2>活動懶人包</h2>' +
       (item.announcement?.previous || item.announcement?.incomplete ? '<p role="status">' +
       (item.announcement.previous ? '新版尚未完成，目前顯示上次活動筆記。' : '整理未完成，請核對原文。') + '</p>' : '')) +
@@ -1042,8 +1030,7 @@ function activityDetail(item, now, summaries = {}, status = '', imageRecords = {
       '" alt="核對用官方原圖"></details></article>').join('') + '</section></details>' :
       managing ? '<div id="verified-image-notes"></div>' : '') +
     '<section id="player-tools"><h2>詢問 Agent</h2>' + questionForm(item, agentReply?.question) +
-    '<div class="agent-reply" aria-live="polite">' + (agentReply?.content ?? '') + '</div>' +
-    '<div class="player-tools"><a href="/compare?activity=' + item.id + '">比較兩種取得方式</a></div></section>' +
+    '<div class="agent-reply" aria-live="polite">' + (agentReply?.content ?? '') + '</div></section>' +
     '<script src="/agent-question.js" defer></script>' +
     (managing ? '<details id="image-library"><summary>官方圖片來源與選圖</summary>' +
     item.images.map((url, i) => {
@@ -1492,6 +1479,9 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
       if (req.method === 'GET' && url.pathname === '/theme.js') {
         return res.writeHead(200, { 'Content-Type': 'text/javascript; charset=utf-8', 'X-Content-Type-Options': 'nosniff' }).end(themeControl);
       }
+      if (req.method === 'GET' && url.pathname === '/button-effects.js') {
+        return res.writeHead(200, { 'Content-Type': 'text/javascript; charset=utf-8', 'X-Content-Type-Options': 'nosniff' }).end(buttonEffects);
+      }
       if (req.method === 'GET' && url.pathname === '/image-actions.js') {
         return res.writeHead(200, { 'Content-Type': 'text/javascript; charset=utf-8', 'X-Content-Type-Options': 'nosniff' }).end(imageActions);
       }
@@ -1548,8 +1538,8 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
         if (req.method === 'GET' && url.pathname === '/backup') {
           return respond(200, page('備份與還原', primaryTabs('/backup') + '<h1>備份與還原</h1>' +
             (url.searchParams.get('restored') === '1' ? '<p role="status">備份已還原，可從各分頁核對保存資料。</p>' : '') +
-            '<p><a href="/backup/download">下載本機備份</a>' +
-            (store && await store.previousDataset() ? ' · <a href="/backup/download?previous=1">下載還原前的備份</a>' : '') + '</p>' +
+            '<p><a class="action-link" href="/backup/download">下載本機備份</a>' +
+            (store && await store.previousDataset() ? ' · <a class="action-link" href="/backup/download?previous=1">下載還原前的備份</a>' : '') + '</p>' +
             '<p>備份包含官方來源、圖片、摘要、人工拆分與修正、問題來源、關注、日曆匯出紀錄與設定。移到另一環境後請重新設定 API 金鑰與 Codex 登入。</p>' +
             (store ? '<p>在新的資料版本還原，並保留目前版本。</p>' : '') +
             '<form method="post" enctype="multipart/form-data"><label>選擇備份檔 <input type="file" name="backup" accept=".json,application/json" required></label>' +
@@ -1656,7 +1646,7 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
         const records = (await readIssues(items)).filter(issue => (!activityId || issue.activities.some(activity => activity.id === activityId)) &&
           (!Object.hasOwn(labels, state) || issue.state === state));
         return respond(200, page('已知／修復問題', primaryTabs('/issues') + '<h1>已知／修復問題</h1>' +
-          (item ? '<p><a href="/activities/' + item.id + '">← 回活動筆記</a> · <a href="/issues">查看全部問題</a></p>' : '') +
+          (item ? '<p><a href="/activities/' + item.id + '">← 回活動筆記</a> · <a class="action-link" href="/issues">查看全部問題</a></p>' : '') +
           '<form method="get">' + (item ? '<input type="hidden" name="activity" value="' + item.id + '">' : '') +
           '<label>官方狀態 <select name="state"><option value="">全部</option>' + Object.entries(labels).map(([key, label]) =>
             '<option value="' + key + '"' + (state === key ? ' selected' : '') + '>' + label + '</option>').join('') +
@@ -2107,27 +2097,6 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
           }
         }
         return respond(status, home(saved, query, now(), Boolean(source), listing, assist, Boolean(store?.vectorSearch)));
-      }
-      if (url.pathname === '/compare' && ['GET', 'POST'].includes(req.method)) {
-        const source = await readSaved('activity-source.json') ?? await readSaved();
-        const items = await browsableItems(source);
-        const params = req.method === 'POST' ? await formData(req) : url.searchParams;
-        const from = items.find(item => item.id === params.get('activity'));
-        const methods = activityMethods(from ? [from, ...items.filter(item => item !== from)] : items);
-        const ids = params.getAll('method');
-        if (req.method === 'GET') return respond(200, comparisonPage(methods, from));
-        try {
-          const selections = ids.map(id => methods.find(entry => entry.method.id === id));
-          if (selections.length !== 2 || selections.some(entry => !entry) || ids[0] === ids[1]) {
-            throw new Problem('請選擇兩種不同的取得方式。');
-          }
-          lockModel();
-          const result = await compareMethods(selections, await askWith());
-          return respond(200, comparisonPage(methods, from, ids, result));
-        } catch (error) {
-          if (!(error instanceof Problem)) throw error;
-          return respond(error.status, comparisonPage(methods, from, ids, undefined, error.message));
-        }
       }
       if (req.method === 'GET' && /^\/images\/[a-f0-9]{24}$/.test(url.pathname)) {
         const key = url.pathname.split('/').at(-1);

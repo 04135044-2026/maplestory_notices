@@ -71,7 +71,7 @@ test('官方回溯依台北日期跨頁，待確認版本可人工發布，列�
     const issueSource = issues.match(/href="(\/issues\/source\/[^"]+)"/)[1];
     assert.match(await get(issueSource), /已知問題事項/);
     const chairId = catalogFromSnapshot(html)[0].id;
-    assert.match(await get('/activities/' + chairId), /查看相關問題/);
+    assert.match(await get('/activities/' + chairId), /查看相關問題 <span class="issue-count">1<\/span>/);
     assert.doesNotMatch(await get('/issues?activity=' + chairId), /未收錄活動的介面異常/);
     const version = listing.match(/href="(\/discover\/[a-f0-9]+)">學院改版/)[1];
     const review = await get(version);
@@ -411,15 +411,14 @@ test('網站保留補充來源，只有明示更正才更新參加期限', async
   }
 });
 
-test('玩家可問活動、比較方法及用自然語言搜尋，模型只能引用適用的資料', async () => {
+test('玩家可問活動及用自然語言搜尋，模型只能引用適用的資料', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'maple-player-assist-'));
   const snapshot = '19129-player.html';
   await writeFile(join(dir, snapshot), html);
   await writeFile(join(dir, 'activity-source.json'), JSON.stringify({ snapshot }));
-  const [chairItem, stressItem] = catalogFromSnapshot(html);
+  const [chairItem] = catalogFromSnapshot(html);
   const methodId = item => item.methods.find(method => method.kind === 'method').id;
   let searchCalls = 0;
-  let codexCalls = 0;
   let imageVersion = 'original';
   const activeDate = '2026-11-12T20:00:00+08:00';
   let date = activeDate;
@@ -444,18 +443,6 @@ test('玩家可問活動、比較方法及用自然語言搜尋，模型只能�
       return { result: { matches: input.query === '未知候選' ? ['S999999'] :
         [input.choices.find(choice => choice.reward === chairItem.title).id] } };
     },
-    codexGenerate: async ({ parts, schema }) => {
-      codexCalls++;
-      const { sides, fields } = JSON.parse(parts[0].text);
-      assert.equal(schema.type, 'object');
-      const [left, right] = sides.map(side => ({
-        ...Object.fromEntries(Object.keys(fields).map(key => [key, []])),
-        eligibility: [{ text: side.sources.find(source => source.text.includes('設計師')).text,
-          sources: [side.sources.find(source => source.text.includes('設計師')).id] }],
-      }));
-      if (codexCalls > 1) left.eligibility[0].sources = right.eligibility[0].sources;
-      return { result: { left, right }, model: '測試 Codex' };
-    },
   });
   try {
     await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
@@ -467,7 +454,8 @@ test('玩家可問活動、比較方法及用自然語言搜尋，模型只能�
     const activityPath = '/activities/' + chairItem.id;
     const detail = await text(activityPath);
     assert.match(detail, /<section id="player-tools"><h2>詢問 Agent<\/h2><form[\s\S]*可能產生費用/);
-    assert.match(detail, /比較兩種取得方式/);
+    assert.doesNotMatch(detail, /比較兩種取得方式/);
+    assert.match(detail, /查看相關問題 <span class="issue-count">0<\/span>/);
     const answer = await post(activityPath + '/ask', { question: '單局1250分夠嗎？' });
     assert.equal(answer.status, 200);
     const answered = await answer.text();
@@ -513,17 +501,7 @@ test('玩家可問活動、比較方法及用自然語言搜尋，模型只能�
     const invalid = await post('/assist/search', { q: '未知候選', type: '外觀與收藏' });
     assert.equal(invalid.status, 502);
     assert.match(await invalid.text(), /用 Agent 搜尋[\s\S]*候選結果無效/);
-    assert.equal((await post('/model-preferences', { provider: 'codex' })).status, 303);
-    assert.match(await text('/compare?activity=' + chairItem.id), /第一種方式[\s\S]*第二種方式/);
-    const selections = [['method', methodId(chairItem)], ['method', methodId(stressItem)]];
-    const comparison = await post('/compare', selections);
-    assert.equal(comparison.status, 200);
-    assert.match(await comparison.text(), /比較結果[\s\S]*依據 A\d+[\s\S]*依據 B\d+[\s\S]*公告未載明[\s\S]*測試 Codex/);
-    const wrongSource = await post('/compare', selections);
-    assert.equal(wrongSource.status, 502);
-    assert.match(await wrongSource.text(), /模型回傳的內容或來源有誤/);
-    assert.equal((await post('/compare', [selections[0], selections[0]])).status, 422);
-    assert.equal(codexCalls, 2);
+    assert.equal((await fetch(root + '/compare')).status, 404);
   } finally {
     if (server.listening) await new Promise(resolve => server.close(resolve));
     await rm(dir, { recursive: true, force: true });
