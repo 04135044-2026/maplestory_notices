@@ -54,11 +54,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\start-native.ps1
 
 輸入 `maple_app` 的 PostgreSQL 密碼，看到 `http://127.0.0.1:3211` 後再開啟網站。腳本使用原生資料庫 `127.0.0.1:5433/maple_native` 和既有的 `maple-trial-01` 資料集。執行原則參數只套用到這次啟動的 PowerShell 程序。要停止網站，在該視窗按 `Ctrl+C`。
 
-1. 使用 [PostgreSQL Windows 安裝程式](https://www.postgresql.org/download/windows/)，選擇 PostgreSQL 18、pgAdmin 4 與命令列工具。若原 Docker 資料庫使用 `5432`，將原生服務設為 `5433`。自行設定管理員密碼，安裝完成後可在 Windows「服務」查看及啟停 PostgreSQL。
+1. 使用 [PostgreSQL Windows 安裝程式](https://www.postgresql.org/download/windows/)，選擇 PostgreSQL 18、pgAdmin 4 與命令列工具。將伺服器連接埠設為 `5433`。自行設定管理員密碼，安裝完成後可在 Windows「服務」查看及啟停 PostgreSQL。
 2. 依 [pgvector Windows 安裝說明](https://github.com/pgvector/pgvector#windows) 使用 Visual Studio 的 C++ 工具編譯並安裝相同主版本的擴充套件。用 pgAdmin 連線 `127.0.0.1:5433`，建立專案登入角色及由該角色擁有的資料庫。以資料庫管理員在該資料庫執行 `CREATE EXTENSION IF NOT EXISTS vector;`，再用 `SELECT extversion FROM pg_extension WHERE extname = 'vector';` 確認已啟用。
 3. 在舊站「備份與還原」下載 JSON 備份。另開 PowerShell，設定 `MAPLE_DATABASE_URL` 指向新資料庫、`MAPLE_DATABASE_NAMESPACE` 為 `maple-trial-01`，並以 `PORT=3212` 啟動試用站。從試用站「備份與還原」上傳 JSON；核對公告原文、活動筆記、關注、人工修正和圖片獎勵。語意搜尋另用一個沒有關鍵字命中的口語句確認 Ollama 和 pgvector 都能回應。
-4. 驗收後，暫停舊站的排程、匯入與資料修改，等處理中的工作結束。舊站仍運行時下載最後一份備份，再關閉舊站並把備份還原至試用站。結束試用站，沿用同一組資料庫連線及資料集設定，在 `3211` 啟動網站。停止 Docker 中的舊資料庫，再確認原資料及語意搜尋可用。
-5. 若需回復，先匯出切換後的資料，再關閉原生資料庫版網站以釋放 `3211`。從 Docker Desktop 啟動原資料庫，再用原連線及資料集設定啟動 `3211`。日常可用 pgAdmin 查看資料庫，或在資料庫的右鍵選單選「Backup」。跨環境移轉使用網站匯出的 JSON。
+4. 驗收後，暫停舊站的排程、匯入與資料修改，等處理中的工作結束。舊站仍運行時下載最後一份備份，再關閉舊站並把備份還原至試用站。結束試用站，沿用同一組資料庫連線及資料集設定，在 `3211` 啟動網站。確認原資料及語意搜尋可用。
+5. 日常可用 pgAdmin 查看資料庫，或在資料庫的右鍵選單選「Backup」。跨環境移轉請使用網站匯出的 JSON。還原時會切換到新的資料版本，可用「下載還原前的備份」取回上一版資料。
 
 PowerShell 可在已設定資料庫連線的同一個視窗中執行以下指令啟動試用站。
 連線格式為 `postgresql://使用者:密碼@127.0.0.1:5433/資料庫`，帳密中的特殊字元需做 URL 編碼。將連線資料保存在本機環境設定。
@@ -69,29 +69,6 @@ $env:MAPLE_DATABASE_NAMESPACE = 'maple-trial-01'
 $env:MAPLE_ENABLE_SCHEDULE = '0'
 node --env-file-if-exists=.env src/start.mjs
 ```
-
-## 用 Docker PostgreSQL 試移轉一份備份
-
-PostgreSQL 可以直接安裝在 Windows，無須 Docker；也可以使用 Docker 或連線到現有的 PostgreSQL 伺服器。無論使用哪種方式，資料庫服務都需要運行，並在 `MAPLE_DATABASE_URL` 設定連線網址。語意搜尋還需要資料庫安裝 pgvector，以及本機 Ollama 和向量模型。更換資料庫前，請先從網站下載備份，再依下方步驟試移轉，不會自動搬移既有資料。以下是使用 Docker 的範例。
-
-先在原本的網站開啟「備份與還原」並下載 JSON。保持 Docker 的資料庫運行。另開 PowerShell，在專案資料夾執行以下指令。若 Docker 使用 5433，將 5432 改成 5433。
-
-```powershell
-$mapleSecretFile = Join-Path $env:LOCALAPPDATA 'maple-postgres/.env'
-$maplePassword = ((Get-Content -LiteralPath $mapleSecretFile | Where-Object { $_ -like 'MAPLE_DB_PASSWORD=*' }) -split '=', 2)[1]
-$env:MAPLE_DATABASE_URL = 'postgresql://maple_admin:' + [uri]::EscapeDataString($maplePassword) + '@127.0.0.1:5432/maple_dev'
-$env:MAPLE_DATABASE_NAMESPACE = 'maple-trial-01'
-node src/import-postgres.mjs 'C:/請改成實際路徑/maplestory-backup.json'
-```
-
-看到「試移轉完成」後，在同一個 PowerShell 啟動試用網站：
-
-```powershell
-$env:PORT = '3211'
-node --env-file-if-exists=.env src/start.mjs
-```
-
-開啟 `http://127.0.0.1:3211`，搜尋既有備份中的獎勵，確認活動筆記、取得方法及官方原文能開啟。按 Ctrl+C 後重啟，再核對一次。試移轉模式預設暫停每日排程，避免和原網站重複抓取。確認只由試用網站執行排程後，可在啟動前設 `$env:MAPLE_ENABLE_SCHEDULE = '1'`。同一份備份在內容未變更時可直接重跑；不同資料請另用資料集名稱。PostgreSQL 模式可從「備份與還原」下載及還原備份，還原會建立並切換到新的資料版本，上一個版本可以用「下載還原前的備份」取回。
 
 ## 回歸測試
 
