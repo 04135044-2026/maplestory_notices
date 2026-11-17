@@ -460,10 +460,12 @@ test('玩家可問活動、比較方法及用自然語言搜尋，模型只能�
     const text = path => fetch(root + path).then(response => response.text());
     const activityPath = '/activities/' + chairItem.id;
     const detail = await text(activityPath);
-    assert.match(detail, /比較兩種取得方式[\s\S]*問這個活動/);
+    assert.match(detail, /<section id="player-tools"><h2>詢問 Agent<\/h2><form[\s\S]*可能產生費用/);
+    assert.match(detail, /比較兩種取得方式/);
     const answer = await post(activityPath + '/ask', { question: '單局1250分夠嗎？' });
     assert.equal(answer.status, 200);
-    assert.match(await answer.text(), /單局達 1250 分[\s\S]*href="#evidence-Q\d+"[\s\S]*累積獲得4萬分或單局獲得1250分/);
+    const answered = await answer.text();
+    assert.match(answered, /<h1>三眼章魚直火燒烤<\/h1>[\s\S]*<section id="player-tools">[\s\S]*單局達 1250 分[\s\S]*href="#evidence-Q\d+"[\s\S]*累積獲得4萬分或單局獲得1250分/);
     assert.match(await (await post(activityPath + '/ask', { question: '未載明' })).text(), /沒有足夠資料回答/);
     const imageAction = detail.match(/action="(\/activities\/[^"]+\/images\/[^"#]+)#/)?.[1];
     const askImage = () => post(activityPath + '/ask', { question: '圖中的技能上限？' }).then(response => response.text());

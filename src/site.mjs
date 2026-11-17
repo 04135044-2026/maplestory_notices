@@ -805,10 +805,35 @@ function imageNoteEditor(item, record, showDraft = false) {
 
 function questionForm(item, question = '') {
   return '<form class="player-question" method="post" action="/activities/' + item.id +
-    '/ask"><label for="player-question">你想更了解這個活動的哪些細節？</label><textarea id="player-question" name="question" rows="2" ' +
-    'maxlength="500" required placeholder="例如：參加資格、活動玩法、獎勵或期限">' +
-    escape(question) + '</textarea><button>用 Agent 回答</button></form>';
+    '/ask#player-tools"><label for="player-question">看完懶人包，還有什麼想問？</label><textarea id="player-question" name="question" rows="2" ' +
+    'maxlength="500" required aria-describedby="agent-question-cost" placeholder="例如：每週任務什麼時候重置？">' +
+    escape(question) + '</textarea><small id="agent-question-cost">送出會呼叫已設定的 AI 模型，可能產生費用。</small><button>送出問題</button></form>';
 }
+
+const agentQuestionScript = `
+const questionForm = document.querySelector('#player-tools form');
+const reply = document.querySelector('#player-tools .agent-reply');
+questionForm?.addEventListener('submit', async event => {
+  event.preventDefault();
+  const button = questionForm.querySelector('button');
+  if (button.disabled) return;
+  button.disabled = true;
+  reply.textContent = '正在查閱活動資料…';
+  try {
+    const response = await fetch(questionForm.action, {
+      method: 'POST', body: new URLSearchParams(new FormData(questionForm)),
+    });
+    const page = new DOMParser().parseFromString(await response.text(), 'text/html');
+    const result = page.querySelector('#player-tools .agent-reply');
+    if (!result) throw new Error();
+    reply.replaceChildren(...result.childNodes);
+  } catch {
+    reply.textContent = '暫時無法取得回答，請稍後再試。';
+  } finally {
+    button.disabled = false;
+  }
+});
+`;
 
 const activityMethods = items => items.flatMap(item => item.methods.filter(method => method.kind === 'method')
   .map(method => ({ item, method })));
@@ -833,7 +858,7 @@ function comparisonPage(methods, from, selections = [], result, error) {
     (error ? '<p role="alert">' + escape(error) + '</p>' : '') + output);
 }
 
-function activityDetail(item, now, summaries = {}, status = '', imageRecords = {}, provider = 'gemini', watches, edits = {}, issues = [], movedGroups = [], draftImage) {
+function activityDetail(item, now, summaries = {}, status = '', imageRecords = {}, provider = 'gemini', watches, edits = {}, issues = [], movedGroups = [], draftImage, agentReply) {
   const periods = timeline(item);
   const showPeriod = (label, period, field) => {
     const change = period.change;
@@ -944,7 +969,7 @@ function activityDetail(item, now, summaries = {}, status = '', imageRecords = {
     (watches ? watchButton({ item }, watches, '/activities/' + item.id) : '') +
     (issues.length ? '<p>這個活動有 ' + issues.length + ' 筆官方問題紀錄。 <a href="/issues?activity=' + item.id +
       '">查看相關問題</a></p>' : '') + '<p>' +
-    activityState(periods, now) + ' · <a href="#player-tools">玩家查詢</a></p>' + (status ? '<p role="status">' + escape(status) + '</p>' : '') +
+    activityState(periods, now) + ' · <a href="#player-tools">詢問 Agent</a></p>' + (status ? '<p role="status">' + escape(status) + '</p>' : '') +
     analysisNote(item) + '<dl><dt>參加資格</dt><dd>' + cite(item.eligibility) +
     (item.sharedEligibility && item.sharedEligibility.text !== item.eligibility?.text
       ? '</dd><dd>版本共用資格 · ' + cite(item.sharedEligibility) : '') +
@@ -964,8 +989,10 @@ function activityDetail(item, now, summaries = {}, status = '', imageRecords = {
     imageNotes.map(source => '<article id="verified-image-' + source.id + '"><h3>' + escape(source.scope) + '</h3><pre>' + escape(source.text) +
       '</pre><details class="image-preview"><summary>預覽官方原圖</summary><img loading="lazy" src="' + source.image +
       '" alt="核對用官方原圖"></details></article>').join('') + '</section>' : '') + '</div>' +
-    '<section id="player-tools"><h2>玩家查詢</h2><div class="player-tools"><a href="/compare?activity=' + item.id +
-    '">比較兩種取得方式</a></div><details><summary>問這個活動</summary>' + questionForm(item) + '</details></section>' +
+    '<section id="player-tools"><h2>詢問 Agent</h2>' + questionForm(item, agentReply?.question) +
+    '<div class="agent-reply" aria-live="polite">' + (agentReply?.content ?? '') + '</div>' +
+    '<div class="player-tools"><a href="/compare?activity=' + item.id + '">比較兩種取得方式</a></div></section>' +
+    '<script src="/agent-question.js" defer></script>' +
     '<details><summary>用訂閱 Codex 整理本批</summary><p>目前預設：' +
     (providerLabels[provider] ?? provider) + '</p><form method="post" action="/activities/' + item.id + '/batch">' +
     item.methods.filter(target => target.kind === 'method').map(target => '<label><input type="checkbox" name="method" value="' +
@@ -1006,7 +1033,7 @@ function note(saved, now, query, catalogItem) {
     : fact('reward');
   return page(activity, activityNav('/?q=' + encodeURIComponent(query ?? notice.reward), '← 回搜尋結果', activity) +
     '<span class="event-label">星夜馬戲團 in 墮落城市</span><h1>' + activity +
-    '</h1><p>' + time.status + (catalogItem ? ' · <a href="/activities/' + catalogItem.id + '#player-tools">玩家查詢</a>' : '') +
+    '</h1><p>' + time.status + (catalogItem ? ' · <a href="/activities/' + catalogItem.id + '#player-tools">詢問 Agent</a>' : '') +
     '</p><dl>' + fact('eligibility') + row('參加期間', time.text, notice.date?.id) +
     row('領獎期限', notice.claim?.text ?? '此活動段落未載明獨立領獎期限',
       notice.claim?.id ?? 'sources') + '</dl><article id="method"><h2>' + method +
@@ -1420,6 +1447,9 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
       }
       if (req.method === 'GET' && url.pathname === '/image-actions.js') {
         return res.writeHead(200, { 'Content-Type': 'text/javascript; charset=utf-8', 'X-Content-Type-Options': 'nosniff' }).end(imageActions);
+      }
+      if (req.method === 'GET' && url.pathname === '/agent-question.js') {
+        return res.writeHead(200, { 'Content-Type': 'text/javascript; charset=utf-8', 'X-Content-Type-Options': 'nosniff' }).end(agentQuestionScript);
       }
       if (req.method === 'POST' && req.headers['sec-fetch-site'] && !['same-origin', 'none'].includes(req.headers['sec-fetch-site'])) {
         throw new Problem('請從本機網站操作。', 403);
@@ -2231,10 +2261,11 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
         const savedMethods = await readSaved('activity-methods.json');
         const summaries = savedMethods?.methods ?? {};
         const preferred = await preferredProvider();
-        if (req.method === 'GET' && !methodId) return respond(200, activityDetail(item, now(), summaries, pending, imageRecords, preferred,
+        const renderActivity = async agentReply => activityDetail(item, now(), summaries, pending, imageRecords, preferred,
           await readSaved('watches.json') ?? {}, await readSaved('manual-edits.json') ?? {},
           (await readIssues(items)).filter(issue => issue.activities.some(activity => activity.id === item.id)),
-          items.filter(group => group.legacyActivityId === item.id)));
+          items.filter(group => group.legacyActivityId === item.id), undefined, agentReply);
+        if (req.method === 'GET' && !methodId) return respond(200, await renderActivity());
         if (req.method === 'POST' && methodId === 'ask') {
           const question = (await formData(req)).get('question')?.trim() ?? '';
           let status = 200;
@@ -2243,7 +2274,7 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
             if (!question || question.length > 500) throw new Problem('請輸入 1–500 字的問題。');
             const result = await answerPlayer(item, question,
               await askWith(preferred), verifiedImageSources(item, imageRecords));
-            content = '<h2>回答</h2>' + (result.facts.length ? assistantFacts(result.facts) : '<p>已收錄的公告沒有足夠資料回答。</p>') +
+            content = '<h3>Agent 回答</h3>' + (result.facts.length ? assistantFacts(result.facts) : '<p>已收錄的公告沒有足夠資料回答，請查閱官方原文。</p>') +
               (result.incomplete && result.facts.length ? '<p>部分條件仍需核對官方公告。</p>' : '') +
               assistantModel(result.metadata) + assistantEvidence(result.facts);
           } catch (error) {
@@ -2251,8 +2282,7 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
             status = error.status;
             content = '<p role="alert">' + escape(error.message) + '</p>';
           }
-          return respond(status, page('問這個活動', activityNav('/activities/' + item.id, '← 回到活動', item.title, item.officialUrl) +
-            '<h1>問這個活動</h1><p>' + escape(item.title) + '</p>' + questionForm(item, question) + content));
+          return respond(status, await renderActivity({ question, content }));
         }
         const target = item.methods.find(method => method.id === methodId && method.kind === 'method');
         if (req.method === 'POST' && (target || methodId === 'batch')) {
