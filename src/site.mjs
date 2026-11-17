@@ -46,6 +46,11 @@ summary{cursor:pointer;font-weight:700}
 .activity-grid>article{margin:0;padding:.85rem;border-top:3px solid var(--accent);min-width:0}
 .activity-grid h2,.activity-grid h3{font-size:1.05rem;line-height:1.35;margin:.45rem 0;overflow-wrap:anywhere}
 .activity-grid p{font-size:.9rem;margin:.35rem 0}
+.search-results{display:flex;flex-wrap:wrap;align-items:flex-start;gap:.8rem}
+.search-results>article{box-sizing:border-box;width:max-content;max-width:min(100%,27rem);overflow-wrap:anywhere}
+.search-results form{margin-bottom:.25rem}
+.activity-family>details{padding:.65rem .8rem}
+.ended-activities{margin-top:2rem;padding-top:.6rem;border-top:2px solid var(--line,#d9e1d7)}
 .event-label{display:inline-block;border:1px solid #cfdad2;border-radius:.4rem;padding:.05rem .4rem;color:#405449;font-size:.82rem}
 .image-preview{border:0;padding:0;margin:.5rem 0;background:transparent}
 .image-preview img{display:block;max-width:100%;width:auto;height:auto;max-height:min(65vh,30rem);object-fit:contain;margin:.6rem 0}
@@ -231,11 +236,11 @@ function groupByActivity(entries, itemOf) {
   return [...groups];
 }
 
-function activityGroups(entries, itemOf, render) {
+function activityGroups(entries, itemOf, render, gridClass = '') {
   return groupByActivity(entries, itemOf).map(([title, cards]) => {
     const tone = familyTone(title);
     return '<section class="activity-family" data-tone="' + tone + '"><h2>' + escape(title) +
-      '</h2><div class="activity-grid">' + cards.map(render).join('') + '</div></section>';
+      '</h2><div class="activity-grid ' + gridClass + '">' + cards.map(render).join('') + '</div></section>';
   }).join('');
 }
 
@@ -365,8 +370,8 @@ function catalogResults(entries, saved, watches, back = '/', flat = false) {
       '<p><a href="' + href + '">' + (reward ? '查看取得方式 →' : '查看活動 →') + '</a></p>' +
       (watches ? watchButton({ item, method: target, reward }, watches, back) : '') + '</article>';
   };
-  return flat ? '<div class="activity-grid">' + entries.map(render).join('') + '</div>' :
-    activityGroups(entries, entry => entry.item, render);
+  return flat ? '<div class="activity-grid search-results">' + entries.map(render).join('') + '</div>' :
+    activityGroups(entries, entry => entry.item, render, 'search-results');
 }
 
 function primaryTabs(active) {
@@ -707,23 +712,37 @@ export function sortedActivityFamilies(activities, now) {
 
 function activityList(activities, query, now, pending = '') {
   const families = sortedActivityFamilies(activities, now);
-  const entries = families.flatMap(({ items }) => items.flatMap(item => {
+  const entries = families.map(({ title, items }) => ({ title, entries: items.flatMap(item => {
     const children = items.length === 1 ? childActivities(item) : [];
     return children.length ? children : [{ item, title: item.title, href: '/activities/' + item.id }];
-  })).filter(({ item, method, title }) => !query || familyTitle(item).includes(query) || title.includes(query) ||
-    (method ? method.title.includes(query) : item.methods.some(entry => entry.title.includes(query))));
+  }).filter(({ item, method, title }) => !query || familyTitle(item).includes(query) || title.includes(query) ||
+    (method ? method.title.includes(query) : item.methods.some(entry => entry.title.includes(query)))) }));
+  const render = ({ item, method, title, href, state, periods }) => {
+    const group = method?.groupTitle ?? item.groupTitle ?? (method && familyTitle(item) !== item.title ? item.title : undefined);
+    return '<article>' + (group ? '<span class="event-label">' + escape(group) + '</span>' : '') +
+      '<h3><a href="' + href + '">' + escape(title) + '</a></h3><p>' +
+      state + ' · ' + escape(periodText(periods.participation)) + '</p>' + specialTimeNotes(item, method) + '</article>';
+  };
+  const groups = ended => entries.map(({ title, entries }) => {
+    const cards = entries.map(entry => {
+      const periods = timeline(entry.item, entry.method);
+      return { ...entry, periods, state: activityState(periods, now) };
+    }).filter(entry => (entry.state === '已結束') === ended);
+    if (!cards.length) return '';
+    const grid = '<div class="activity-grid">' + cards.map(render).join('') + '</div>';
+    return '<section class="activity-family" data-tone="' + familyTone(title) + '"><h3>' + escape(title) + '</h3>' +
+      (cards.length === 1 && cards[0].title === title ? grid : '<details' + (query ? ' open' : '') +
+        '><summary>查看 ' + cards.length + ' 個子活動</summary>' + grid + '</details>') + '</section>';
+  }).join('');
+  const current = groups(false);
+  const ended = groups(true);
   return page('活動清單', primaryTabs('/') + '<h1>全部活動' +
     '</h1><p>進行中或仍可領獎的主活動優先；各組依主活動開始日期由新到舊排列，日期未知的排在各組最後。</p><p>' + link + '</p>' + (pending ? '<p>' + escape(pending) + ' <a href="/review">檢視來源</a></p>' : '') +
     '<form><label for="q">活動名稱</label> <input id="q" name="q" value="' + escape(query) +
     '"> <button>搜尋</button></form>' +
-    (entries.length ? activityGroups(entries, entry => entry.item, ({ item, method, title, href }) => {
-      const periods = timeline(item, method);
-      const group = method?.groupTitle ?? item.groupTitle ?? (method && familyTitle(item) !== item.title ? item.title : undefined);
-      return '<article>' + (group ? '<span class="event-label">' + escape(group) + '</span>' : '') +
-        '<h3><a href="' + href + '">' + escape(title) + '</a></h3><p>' +
-        activityState(periods, now) + ' · ' + escape(periodText(periods.participation)) + '</p>' +
-        specialTimeNotes(item, method) + '</article>';
-    }) : '<p>查無符合的活動。</p>'));
+    (current ? '<section><h2>進行中與其他活動</h2>' + current + '</section>' : '') +
+    (ended ? '<section class="ended-activities"><h2>已結束活動</h2>' + ended + '</section>' : '') +
+    (!current && !ended ? '<p>查無符合的活動。</p>' : ''));
 }
 
 function sourceBody(source) {
@@ -774,7 +793,7 @@ function verifiedImageSources(item, records) {
     const key = imageKey(url);
     const record = records[key];
     const note = record?.verifiedText?.[item.id];
-    return note && note.version === record.version ? [{
+    return note && note.version === record.version && (!item.announcement || note.snapshot === item.discoverySnapshot) ? [{
       id: key, scope: '官方圖片 ' + (index + 1) + ' · 已核對文字', text: note.text, methodId: note.methodId,
       image: '/images/' + key + '?v=' + encodeURIComponent(note.version),
     }] : [];
@@ -784,7 +803,8 @@ function verifiedImageSources(item, records) {
 function imageNoteEditor(item, record, showDraft = false) {
   if (!record?.version) return '<p>手動填寫前請先保存原圖，也可直接按 AI 辨識。</p>';
   const note = record?.verifiedText?.[item.id];
-  const confirmed = note?.version === record.version ? note : undefined;
+  const confirmed = note?.version === record.version &&
+    (!item.announcement || note.snapshot === item.discoverySnapshot) ? note : undefined;
   const methods = item.methods.filter(method => method.kind === 'method');
   const draft = showDraft && record.recognition;
   const label = draft ? 'AI 辨識稿 · 待人工核對' : confirmed ? '手動填寫 · 已保存核對內容' :
@@ -858,7 +878,11 @@ function comparisonPage(methods, from, selections = [], result, error) {
     (error ? '<p role="alert">' + escape(error) + '</p>' : '') + output);
 }
 
-function activityDetail(item, now, summaries = {}, status = '', imageRecords = {}, provider = 'gemini', watches, edits = {}, issues = [], movedGroups = [], draftImage, agentReply) {
+function activityDetail(item, now, summaries = {}, status = '', imageRecords = {}, watches, edits = {}, issues = [], movedGroups = [], { draftImage, agentReply, managing = false } = {}) {
+  const activityPath = '/activities/' + item.id;
+  const managePath = activityPath + '/manage';
+  const sourceLink = source => managing ? evidenceLink(source) : isTable(source)
+    ? ' <a href="' + managePath + '#' + source.id + '">查看來源表格</a>' : evidenceLink(source);
   const periods = timeline(item);
   const showPeriod = (label, period, field) => {
     const change = period.change;
@@ -869,10 +893,10 @@ function activityDetail(item, now, summaries = {}, status = '', imageRecords = {
       : linked.length ? '<p>' + (linked.filter(entry => entry.kind === 'correction').length > 1 ? '官方更正期限有差異，待比對' : '另有來源待比對') +
         ' <a href="/corrections?activity=' + item.id + '">查看來源關聯</a></p>' : '';
     const sources = period.phases?.map(phase => phase.source) ?? (period.source ? [period.source] : []);
-    return '<dt>' + label + '</dt><dd>' + escape(periodText(period)) + sources.map(evidenceLink).join('') + evidence + '</dd>';
+    return '<dt>' + label + '</dt><dd>' + escape(periodText(period)) + sources.map(sourceLink).join('') + evidence + '</dd>';
   };
   const cite = source => source ? (isTable(source) ? '' : escape(source.text)) +
-    evidenceLink(item.sources.find(original => original.id === source.id) ?? source) : '未載明／待確認';
+    sourceLink(item.sources.find(original => original.id === source.id) ?? source) : '未載明／待確認';
   const facts = (label, sources, earlier) => {
     const repeated = new Set(earlier?.sources.map(source => source.text.replace(/\s+/g, ' ').trim()));
     const unique = sources.filter(source => !repeated.has(source.text.replace(/\s+/g, ' ').trim()));
@@ -883,7 +907,10 @@ function activityDetail(item, now, summaries = {}, status = '', imageRecords = {
   };
   const placed = new Set();
   const placedTables = new Set();
-  const isSelected = url => imageRecords[imageKey(url)]?.selected ?? item.shopImages?.includes(url);
+  const isSelected = url => {
+    const record = imageRecords[imageKey(url)];
+    return item.announcement ? record?.selectedFor?.[item.id] === true : record?.selected ?? item.shopImages?.includes(url);
+  };
   const imagesFor = urls => [...new Set(urls)].filter(url => !placed.has(url)).map(url => {
     placed.add(url);
     const key = imageKey(url);
@@ -918,7 +945,7 @@ function activityDetail(item, now, summaries = {}, status = '', imageRecords = {
     const applicableSources = methodContext(item, method);
     const qualification = applicableSources.find(source => method.sourceIds.includes(source.id) && eligibilityLabel.test(source.text)) ??
       applicableSources.find(source => method.sharedSourceIds.includes(source.id) && eligibilityLabel.test(source.text));
-    if (method.kind === 'reference') return originalFlow(
+    if (method.kind === 'reference') return !managing ? '' : originalFlow(
       methodContext(item, method).filter(source => method.sourceIds.includes(source.id)), method.images,
       '補充說明 · ' + escape(method.title));
     const { steps, rewards, costs, chances, limits } = methodFacts(item, method);
@@ -927,7 +954,8 @@ function activityDetail(item, now, summaries = {}, status = '', imageRecords = {
     const auto = summary ? summaryForDisplay(summary, methodContext(item, method)) : {};
     const editableSummary = Object.entries(methodFields).map(([key, label]) => {
       const edit = manual[key];
-      if (!edit) return facts(label, (auto[key] ?? []).map(fact => ({ text: fact.text, id: fact.source })));
+      if (!edit) return !managing && !auto[key]?.length ? '' :
+        facts(label, (auto[key] ?? []).map(fact => ({ text: fact.text, id: fact.source })));
       const changed = editChanged(edit.baseline, editEvidence(item, method, summary, key));
       return '<dt>' + label + ' · 個人修正</dt><dd>' + escape(edit.text) +
         (changed ? '<p role="status">來源或自動摘要已變更，請核對個人修正。</p>' : '') + '</dd>';
@@ -942,6 +970,22 @@ function activityDetail(item, now, summaries = {}, status = '', imageRecords = {
     const ownPeriods = [
       ['參加期間', 'participation'], ['開領時間', 'opening'], ['領獎期限', 'claim'], ['效果到期', 'effect'],
     ].filter(([, key]) => methodPeriods[key].source?.id !== periods[key].source?.id);
+    if (!managing) {
+      const announcement = item.announcement;
+      const agentMethod = announcement?.note.methods.find(entry => entry.title === method.title);
+      const agentFacts = agentMethod?.facts.filter(fact => !Object.keys(manual).some(key => methodFields[key] === fieldLabels[fact.kind]))
+        .map(fact => '<dt>' + escape(fieldLabels[fact.kind]) + '</dt><dd>' +
+        escape(fact.text) + ' <a href="' + escape(announcement.href + '#' + fact.source) + '">核對原文</a></dd>').join('') ?? '';
+      // Keep one summary per method. An explicit edit or a saved method summary takes priority.
+      const summaryContent = editableSummary + (summary ? '' : agentFacts);
+      const dates = ownPeriods.map(([label, key]) => showPeriod(label, methodPeriods[key])).join('');
+      return '<article id="' + method.id + '"><h3>' + escape(method.title) + '</h3>' +
+        (dates || summaryContent ? '<dl>' + dates + summaryContent + '</dl>' : '<p>活動摘要尚未完成。</p>') +
+        (imageRewards.length ? '<ul>' + imageRewards.map(reward => '<li>' + escape(reward.name) +
+          (reward.condition ? ' · ' + escape(reward.condition) : '') +
+          ' · <a href="#verified-image-' + reward.imageSource + '">查看核對文字與原圖</a></li>').join('') + '</ul>' : '') +
+        imagesFor(ownImages.filter(isSelected)) + '</article>';
+    }
     return '<article id="' + method.id + '"><h2>' + escape(method.title) + '</h2>' +
       (method.groupTitle && method.groupTitle !== method.title ? '<p>' + escape(method.groupTitle) + '</p>' : '') + '<dl>' +
       (qualification && qualification.id !== item.eligibility?.id ? '<dt>參加資格</dt><dd>' + cite(qualification) + '</dd>' : '') +
@@ -963,14 +1007,21 @@ function activityDetail(item, now, summaries = {}, status = '', imageRecords = {
       '<p><a href="/edits?method=' + method.id + '">修正摘要</a></p>' +
       '<form method="post" action="/activities/' + item.id + '/' + method.id + '"><button>用預設模型整理這個方法</button></form></details></article>';
   }).join('');
-  const shared = originalFlow(item.sources, item.images, '活動共用表格與圖片');
+  const shared = managing ? originalFlow(item.sources, item.images, '活動共用表格與圖片') :
+    imagesFor(item.images.filter(isSelected));
   const imageNotes = verifiedImageSources(item, imageRecords);
   return page(item.title, activityNav('/activities', '← 全部活動', item.title, item.officialUrl) + eventLabel(item) + '<h1>' + escape(item.title) + '</h1>' +
+    (managing ? '<p><a href="' + activityPath + '">← 回活動筆記</a> · <a href="/manage">公告管理</a> · ' +
+      '<a href="' + (item.announcement ? item.announcement.href : item.discoverySnapshot ? '/discover' : '/review') + '">查看公告來源與拆分</a></p>' :
+      '<p><a href="' + managePath + '">管理筆記</a></p>') +
     (watches ? watchButton({ item }, watches, '/activities/' + item.id) : '') +
     (issues.length ? '<p>這個活動有 ' + issues.length + ' 筆官方問題紀錄。 <a href="/issues?activity=' + item.id +
       '">查看相關問題</a></p>' : '') + '<p>' +
     activityState(periods, now) + ' · <a href="#player-tools">詢問 Agent</a></p>' + (status ? '<p role="status">' + escape(status) + '</p>' : '') +
-    analysisNote(item) + '<dl><dt>參加資格</dt><dd>' + cite(item.eligibility) +
+    (managing ? analysisNote(item) : '<h2>活動懶人包</h2>' +
+      (item.announcement?.previous || item.announcement?.incomplete ? '<p role="status">' +
+      (item.announcement.previous ? '新版尚未完成，目前顯示上次活動筆記。' : '整理未完成，請核對原文。') + '</p>' : '')) +
+    '<dl><dt>參加資格</dt><dd>' + cite(item.eligibility) +
     (item.sharedEligibility && item.sharedEligibility.text !== item.eligibility?.text
       ? '</dd><dd>版本共用資格 · ' + cite(item.sharedEligibility) : '') +
     '</dd>' + showPeriod('參加期間', periods.participation, 'participation') + showPeriod('開領時間', periods.opening) +
@@ -979,31 +1030,27 @@ function activityDetail(item, now, summaries = {}, status = '', imageRecords = {
     periods.makeup.map(rule => '<dt>補完規則</dt><dd>' + cite(rule.source) + '</dd>').join('') + '</dl>' +
     (item.relatedNotices?.length ? '<details><summary>相關官方公告</summary><ul>' + item.relatedNotices.map(notice =>
       '<li><a href="/discover/' + notice.id + '">' + escape(notice.title) + '</a></li>').join('') + '</ul></details>' : '') +
-    (item.template === 'beanfun-event-layout-v1' && item.warnings.length ?
+    (managing && item.template === 'beanfun-event-layout-v1' && item.warnings.length ?
       '<ul>' + item.warnings.map(warning => '<li>' + escape(warning) + '</li>').join('') + '</ul>' : '') +
     shared + sections + movedGroups.map(group => '<section id="' + group.legacyGroupId + '"><h2><a href="/activities/' +
       group.id + '">' + escape(group.title) + '</a></h2><ul>' + group.methods.map(method =>
         '<li id="' + (method.legacyId ?? method.id) + '"><a href="/activities/' + group.id + '#' + method.id + '">' +
         escape(method.title) + '</a></li>').join('') + '</ul></section>').join('') +
-    '<div id="verified-image-notes">' + (imageNotes.length ? '<section><h2>已核對的官方圖片文字</h2>' +
+    (imageNotes.length ? '<details id="verified-image-notes" data-source-flow' + (managing ? ' open' : '') + '><summary>已核對的官方圖片文字</summary><section>' +
     imageNotes.map(source => '<article id="verified-image-' + source.id + '"><h3>' + escape(source.scope) + '</h3><pre>' + escape(source.text) +
       '</pre><details class="image-preview"><summary>預覽官方原圖</summary><img loading="lazy" src="' + source.image +
-      '" alt="核對用官方原圖"></details></article>').join('') + '</section>' : '') + '</div>' +
+      '" alt="核對用官方原圖"></details></article>').join('') + '</section></details>' :
+      managing ? '<div id="verified-image-notes"></div>' : '') +
     '<section id="player-tools"><h2>詢問 Agent</h2>' + questionForm(item, agentReply?.question) +
     '<div class="agent-reply" aria-live="polite">' + (agentReply?.content ?? '') + '</div>' +
     '<div class="player-tools"><a href="/compare?activity=' + item.id + '">比較兩種取得方式</a></div></section>' +
     '<script src="/agent-question.js" defer></script>' +
-    '<details><summary>用訂閱 Codex 整理本批</summary><p>目前預設：' +
-    (providerLabels[provider] ?? provider) + '</p><form method="post" action="/activities/' + item.id + '/batch">' +
-    item.methods.filter(target => target.kind === 'method').map(target => '<label><input type="checkbox" name="method" value="' +
-      target.id + '">' + escape(target.title) + '</label> ').join('') +
-    '<button>用訂閱 Codex 整理勾選方法</button></form></details>' +
-    '<details id="image-library"><summary>官方圖片來源與選圖</summary>' +
+    (managing ? '<details id="image-library"><summary>官方圖片來源與選圖</summary>' +
     item.images.map((url, i) => {
       const key = imageKey(url);
       const record = imageRecords[key];
       const shop = item.shopImages?.includes(url);
-      const selected = record?.selected ?? shop;
+      const selected = isSelected(url);
       const preview = record?.version ? '/images/' + key : escape(url);
       return '<article id="image-' + key + '"><p>官方圖片 ' + (i + 1) + ' · ' +
         (record?.version ? '已保存本機原圖' : '尚未保存本機原圖') + '</p>' +
@@ -1017,7 +1064,7 @@ function activityDetail(item, now, summaries = {}, status = '', imageRecords = {
           '<p><label>已核對的單一獎勵名稱 <input name="appearance" maxlength="100" value="' + escape(record?.appearance || '') +
           '"></label> <button name="action" value="confirm">保存外觀對應</button></p>') +
         imageNoteEditor(item, record, draftImage === key) + '</form></article>';
-    }).join('') + '</details><script src="/image-actions.js" defer></script>');
+    }).join('') + '</details>' : '') + '<script src="/image-actions.js" defer></script>');
 }
 
 function note(saved, now, query, catalogItem) {
@@ -1827,7 +1874,7 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
               if (image.version === record.version) continue;
               await save('image-' + image.version, image.bytes);
               records[key] = { url: record.url, version: image.version, mime: image.mime, selected: record.selected,
-                verifiedText: record.verifiedText };
+                selectedFor: record.selectedFor, verifiedText: record.verifiedText };
               changed.push(key);
             } catch (error) { if (!(error instanceof Problem)) throw error; failed.push(key); }
           }
@@ -2168,7 +2215,18 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
           return respond(200, activityList(listed, url.searchParams.get('q')?.trim() ?? '', now(), pending));
         }
         const [, , activityId, methodId, extra, rest] = url.pathname.split('/');
-        const item = items.find(item => item.id === activityId);
+        let item = items.find(item => item.id === activityId);
+        if (item?.announcement && (methodId === 'manage' || methodId === 'images' || methodId === 'ask' || !methodId)) {
+          const html = await readData(item.discoverySnapshot, 'utf8').catch(error => {
+            if (error.code !== 'ENOENT') throw error;
+            return '';
+          });
+          const images = parts => parts.flatMap(part => part.image ? [part.image] : part.children ? images(part.children) : []);
+          const officialImages = originalBlocks(html, item.officialUrl)
+            .flatMap(block => block.image ? [block.image] : images(block.table ?? []))
+            .filter(url => new URL(url).origin === 'https://tw.hicdn.beanfun.com');
+          item = { ...item, images: [...new Set([...item.images, ...officialImages])] };
+        }
         const imageRecords = await readSaved('official-images.json') ?? {};
         if (!item && req.method === 'GET' && !methodId) {
           const old = previousCatalog?.items.find(entry => entry.id === activityId);
@@ -2215,7 +2273,10 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
             await save('image-' + version, bytes);
             Object.assign(record, { mime, version });
           }
-          if (action === 'select' || action === 'remove') record.selected = action === 'select';
+          if (action === 'select' || action === 'remove') {
+            if (item.announcement) record.selectedFor = { ...record.selectedFor, [item.id]: action === 'select' };
+            else record.selected = action === 'select';
+          }
           if (action === 'confirm') {
             const appearance = form.get('appearance')?.trim() ?? '';
             if (appearance.length > 100) throw new Problem('獎勵名稱過長。');
@@ -2230,7 +2291,8 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
               if (methodId && !item.methods.some(method => method.kind === 'method' && method.id === methodId)) {
                 throw new Problem('請選擇此活動的獎勵取得方式。');
               }
-              record.verifiedText[item.id] = { text, version: record.version, ...(methodId ? { methodId } : {}) };
+              record.verifiedText[item.id] = { text, version: record.version, ...(methodId ? { methodId } : {}),
+                ...(item.announcement ? { snapshot: item.discoverySnapshot } : {}) };
             } else delete record.verifiedText[item.id];
           }
           imageRecords[extra] = record;
@@ -2254,18 +2316,19 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
             action === 'recognize' ? 'AI 辨識稿已產生。請對照原圖核對後再保存。' :
             action === 'remove-text' ? '已從活動筆記移除核對文字。' : '已更新官方圖片。';
           return respond(200, activityDetail(item, now(), methods?.methods ?? {}, status, imageRecords,
-            await preferredProvider(), undefined, {}, [], [], action === 'recognize' ? extra : undefined)
+            undefined, await readSaved('manual-edits.json') ?? {}, [], [], { managing: true, draftImage: action === 'recognize' ? extra : undefined })
             .replace('<details id="image-library">', '<details id="image-library" open>'));
         }
         if (!item || extra !== undefined) throw new Problem('找不到活動。', 404);
         const savedMethods = await readSaved('activity-methods.json');
         const summaries = savedMethods?.methods ?? {};
         const preferred = await preferredProvider();
-        const renderActivity = async agentReply => activityDetail(item, now(), summaries, pending, imageRecords, preferred,
+        const renderActivity = async options => activityDetail(item, now(), summaries, pending, imageRecords,
           await readSaved('watches.json') ?? {}, await readSaved('manual-edits.json') ?? {},
           (await readIssues(items)).filter(issue => issue.activities.some(activity => activity.id === item.id)),
-          items.filter(group => group.legacyActivityId === item.id), undefined, agentReply);
+          items.filter(group => group.legacyActivityId === item.id), options);
         if (req.method === 'GET' && !methodId) return respond(200, await renderActivity());
+        if (req.method === 'GET' && methodId === 'manage') return respond(200, await renderActivity({ managing: true }));
         if (req.method === 'POST' && methodId === 'ask') {
           const question = (await formData(req)).get('question')?.trim() ?? '';
           let status = 200;
@@ -2289,7 +2352,7 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
             status = error.status;
             content = '<p role="alert">' + escape(error.message) + '</p>';
           }
-          return respond(status, await renderActivity({ question, content }));
+          return respond(status, await renderActivity({ agentReply: { question, content } }));
         }
         const target = item.methods.find(method => method.id === methodId && method.kind === 'method');
         if (req.method === 'POST' && (target || methodId === 'batch')) {

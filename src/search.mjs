@@ -57,11 +57,17 @@ export function activityRewards(item, method, images = {}) {
       }
     }
   }
-  for (const url of new Set(item.images ?? [])) {
-    const key = imageKey(url);
+  const keys = new Set((item.images ?? []).map(imageKey));
+  if (item.announcement) {
+    for (const [key, record] of Object.entries(images)) {
+      if (record.verifiedText?.[item.id]?.snapshot === item.discoverySnapshot) keys.add(key);
+    }
+  }
+  for (const key of keys) {
     const record = images[key];
     const note = record?.verifiedText?.[item.id];
-    if (!record?.version || note?.version !== record.version || note.methodId !== method.id) continue;
+    if (!record?.version || note?.version !== record.version || note.methodId !== method.id ||
+        item.announcement && note.snapshot !== item.discoverySnapshot) continue;
     for (const line of note.text.split(/\r?\n/)) {
       const match = line.match(/^獎勵[：:]\s*([^｜|]+?)(?:\s*[｜|]\s*(.+))?\s*$/u);
       if (!match) continue;

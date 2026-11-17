@@ -80,7 +80,9 @@ test('官方回溯依台北日期跨頁，待確認版本可人工發布，列�
     const revision = review.match(/name="fingerprint" value="([^"]+)"/)[1];
     const added = await post(version, { fingerprint: revision, title: '學院新活動', method: '完成指定任務', own: 'B2' });
     assert.equal(added.status, 303);
-    assert.match(await get(added.headers.get('location')), /學院新活動[\s\S]*用預設模型整理這個方法/);
+    const activity = added.headers.get('location').split('#')[0];
+    assert.match(await get(activity), /學院新活動[\s\S]*管理筆記/);
+    assert.match(await get(activity + '/manage'), /學院新活動[\s\S]*用預設模型整理這個方法/);
     assert.match(await get('/?q=學院新活動'), /學院新活動/);
     const older = await post('/discover/import', { url: event(18888) });
     assert.equal(older.status, 303);
@@ -169,7 +171,8 @@ test('未知模板的原文經人工確認後可查閱，且只整理已選區�
     assert.match(listing, /人工活動/);
     assert.match(listing, /三眼章魚直火燒烤/);
     assert.match(listing, /新來源拆分待確認/);
-    const action = detail.match(/action="(\/activities\/[^"]+)"/)[1];
+    const management = await (await fetch(root + saved.headers.get('location').split('#')[0] + '/manage')).text();
+    const action = management.match(/action="(\/activities\/[^"]+)"/)[1];
     assert.equal((await fetch(root + action, { method: 'POST', redirect: 'manual' })).status, 303);
     assert.equal(calls, 1);
   } finally {
@@ -264,7 +267,10 @@ test('從活動入口核對取得方法，Gemini 只收到指定方法的適用�
     const path = list.match(/href="(\/activities\/beanfun-[^"]+)"/)?.[1];
     assert.ok(path);
     assert.doesNotMatch(list, /消除壓力！/);
-    const detail = await (await fetch(root + path)).text();
+    const reader = await (await fetch(root + path)).text();
+    assert.match(reader, /活動懶人包[\s\S]*詢問 Agent/);
+    assert.doesNotMatch(reader, /摘要整理|官方圖片來源與選圖|用訂閱 Codex 整理本批/);
+    const detail = await (await fetch(root + path.split('#')[0] + '/manage')).text();
     assert.match(detail, /見習者設計師/);
     assert.match(detail, /內拉/);
     assert.match(detail, /4萬分或單局獲得1250分/);
@@ -306,7 +312,7 @@ test('從活動入口核對取得方法，Gemini 只收到指定方法的適用�
     assert.equal((await fetch(root + imageAction, { method: 'POST', body: new URLSearchParams({ action: 'recognize' }) })).status, 200);
     assert.equal(imageCalls, 1);
     const lucky = catalogFromSnapshot(html)[2];
-    const luckyDetail = await (await fetch(root + '/activities/' + lucky.id)).text();
+    const luckyDetail = await (await fetch(root + '/activities/' + lucky.id + '/manage')).text();
     assert.match(luckyDetail, /2026\/11\/11/);
     assert.match(luckyDetail, /可能獎勵/);
     assert.match(luckyDetail, /一天1次，一週最多3次/);
@@ -467,7 +473,8 @@ test('玩家可問活動、比較方法及用自然語言搜尋，模型只能�
     const answered = await answer.text();
     assert.match(answered, /<h1>三眼章魚直火燒烤<\/h1>[\s\S]*<section id="player-tools">[\s\S]*單局達 1250 分[\s\S]*href="#evidence-Q\d+"[\s\S]*累積獲得4萬分或單局獲得1250分/);
     assert.match(await (await post(activityPath + '/ask', { question: '未載明' })).text(), /沒有足夠資料回答/);
-    const imageAction = detail.match(/action="(\/activities\/[^"]+\/images\/[^"#]+)#/)?.[1];
+    const management = await text(activityPath + '/manage');
+    const imageAction = management.match(/action="(\/activities\/[^"]+\/images\/[^"#]+)#/)?.[1];
     const askImage = () => post(activityPath + '/ask', { question: '圖中的技能上限？' }).then(response => response.text());
     const draft = await post(imageAction, { action: 'recognize' }).then(response => response.text());
     assert.match(draft, /待人工核對[\s\S]*待核對的辨識稿/);
