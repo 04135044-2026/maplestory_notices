@@ -68,7 +68,12 @@ export async function analyzeSnapshot(html, job, generate) {
   }
   const notes = result.notes.map(({ title, source, methods }) => ({ title: title.trim(), source, methods: methods.map(value => ({
     title: value.title.trim(), source: value.source,
-    facts: value.facts.map(({ kind, text, source }) => ({ kind, text: text.trim(), source })),
+    facts: value.facts.map(({ kind, text, source }) => {
+      const name = text.trim();
+      const chair = kind === 'reward' && [...(evidence.get(source) ?? '').matchAll(/椅子\s*[「『]([^」』]+)[」』]/g)]
+        .some(match => match[1] === name);
+      return { kind, text: name, source, ...(chair ? { rewardCategory: '椅子' } : {}) };
+    }),
   })) }));
   const facts = notes.flatMap(note => note.methods.flatMap(method => method.facts));
   const missingPeriod = inputBlocks.some(block => {
@@ -90,9 +95,10 @@ export function analyzedItems(id, entry) {
     const sources = [];
     const methods = note.methods.map(method => {
       const methodId = id + '-' + fingerprint(method.title).slice(0, 14);
-      const sourceIds = method.facts.map(({ kind, text, source }, index) => {
+      const sourceIds = method.facts.map(({ kind, text, source, rewardCategory }, index) => {
         const id = methodId + '-' + index;
-        const value = dates[kind] ? dates[kind] + '：' + text : kind === 'reward' ? '可獲得「' + text + '」' : text;
+        const value = dates[kind] ? dates[kind] + '：' + text :
+          kind === 'reward' ? '可獲得' + (rewardCategory === '椅子' ? '椅子' : '') + '「' + text + '」' : text;
         sources.push({ id, text: value, scope: '公告整理 · ' + fieldLabels[kind], images: [], url: href + '#' + source });
         return id;
       });

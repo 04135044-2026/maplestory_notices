@@ -84,7 +84,7 @@ test('公告探索自動分析、保留最新成功活動，首次不完整可�
   assert.deepEqual(calls, ['第一版活動', '第二版缺漏活動', '模型漏掉日期', '首次部分活動', '過時並行活動', '最後新版活動']);
 });
 
-test('語意搜尋使用目前快照並連回原文，Ollama 中斷時名稱搜尋仍可使用', {
+test('口語查詢依椅子分類連到目前可參加的活動，Ollama 離線時可改用名稱搜尋', {
   skip: !process.env.MAPLE_TEST_DATABASE_URL,
 }, async t => {
   const { randomUUID } = await import('node:crypto');
@@ -97,8 +97,14 @@ test('語意搜尋使用目前快照並連回原文，Ollama 中斷時名稱搜�
   let label = '舊內容';
   let offline = false;
   const batches = [];
-  const server = website({ dir, store, fetchAnnouncement: async () => ({
-    title: '獎勵版本公告', html: '<main><h2>簽到獎勵</h2><p>' + label + '：每日擊倒怪物。</p></main>',
+  const server = website({ dir, store, now: () => new Date('2026-11-17T04:00:00Z'), fetchAnnouncement: async () => ({
+    title: '獎勵版本公告', html: page(label).replace('<table>', '<p>可領取椅子「星光寶座」。</p><table>'),
+  }), analyzeNotice: async (_instruction, { blocks: [title, dates, reward] }) => ({
+    result: { complete: true, notes: [{ title: title.text, source: title.id,
+      methods: [{ title: '每日簽到', source: title.id, facts: [
+        { kind: 'participation', text: dates.text, source: dates.id },
+        { kind: 'reward', text: '星光寶座', source: reward.id },
+      ] }] }] },
   }), embeddingFetch: async (url, request) => {
     assert.equal(url, 'http://127.0.0.1:11434/api/embed');
     if (offline) throw new Error('offline');
@@ -123,13 +129,21 @@ test('語意搜尋使用目前快照並連回原文，Ollama 中斷時名稱搜�
   assert.equal((await post('/discover/import', { url: official })).status, 303);
   assert.equal(batches.length, 0);
   const ask = async () => {
-    const response = await post('/semantic/search', { q: '要擊殺什麼才能拿獎勵？' });
+    const response = await post('/semantic/search', { q: '活動椅子有哪些' });
     assert.equal(response.status, 200);
     return response.text();
   };
+  const waitFor = async title => {
+    for (let i = 0; i < 100; i++) {
+      if ((await (await fetch(base + '/activities')).text()).includes(title)) return;
+      await delay(30);
+    }
+    assert.fail('活動筆記未就緒：' + title);
+  };
+  await waitFor(label);
   const first = await ask();
   assert.match(first, /舊內容/);
-  const evidence = first.match(/href="(\/announcement-source\/[^"]+#original-[^"]+)"/)?.[1];
+  const evidence = first.match(/href="(\/activities\/[^"#]+#[^"]+)">星光寶座/)?.[1];
   assert.ok(evidence);
   assert.match(await (await fetch(base + evidence.split('#')[0])).text(), /舊內容/);
   const count = batches.length;
@@ -137,6 +151,7 @@ test('語意搜尋使用目前快照並連回原文，Ollama 中斷時名稱搜�
   assert.equal(batches.length, count + 1, '再次搜尋只向量化查詢文字');
   label = '最新內容';
   assert.equal((await post('/discover/import', { url: official })).status, 303);
+  await waitFor(label);
   const second = await ask();
   assert.match(second, /最新內容/);
   assert.doesNotMatch(second, /舊內容/);

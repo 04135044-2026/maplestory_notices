@@ -1,26 +1,27 @@
 import { fingerprint } from './incremental.mjs';
-import { sourceRoute } from './notice-analysis.mjs';
-import { originalBlocks } from './original-source.mjs';
+import { methodContext } from './catalog.mjs';
+import { searchCatalog } from './search.mjs';
+import { rewardAvailability } from './periods.mjs';
 import { Problem } from './notice.mjs';
 
 export const defaultEmbeddingModel = 'embeddinggemma';
+export const semanticRewardCategory = query => query.normalize('NFKC').includes('椅子') ? '椅子' : '';
 
-export function semanticDocuments(entries) {
-  const documents = [];
-  for (const entry of entries) {
-    let section = '';
-    for (const block of originalBlocks(entry.html, entry.url)) {
-      if (block.heading) section = block.text;
-      if (block.table || block.image || !block.text) continue;
-      for (const passage of block.text.match(/[\s\S]{1,900}/gu)) {
-        const label = section || entry.title;
-        const text = [entry.title, section && section !== entry.title ? section : '', passage].filter(Boolean).join('\n');
-        documents.push({ key: fingerprint(text), text, passage, label,
-          href: sourceRoute(entry.id, entry.snapshot) + '#' + block.id });
-      }
-    }
-  }
-  return documents;
+export function semanticDocuments(items, query, now, images) {
+  const category = semanticRewardCategory(query);
+  return searchCatalog(items, { query: '' }, now, images, { includeMethods: true })
+    .filter(({ state, reward }) => ['進行中', '仍可領獎'].includes(state) &&
+      (!category || reward?.category === category))
+    .map(entry => ({ ...entry, availability: entry.reward ? rewardAvailability(entry.periods, now) : null }))
+    .filter(entry => !entry.reward || entry.availability)
+    .map(entry => {
+      const { item, method, reward } = entry;
+      const details = method ? methodContext(item, method).map(source => source.text).join('\n') : '';
+      const text = [item.title, method?.title, reward?.name, reward?.category, reward?.condition,
+        details.slice(0, 900)].filter(Boolean).join('\n');
+      const key = fingerprint([item.id, method?.id, reward?.name, reward?.group, text]);
+      return { key, text, entry };
+    });
 }
 
 export async function ollamaEmbeddings(model, input, fetchImpl = fetch) {

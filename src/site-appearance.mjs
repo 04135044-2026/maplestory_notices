@@ -45,6 +45,8 @@ select,textarea{padding:.35rem .55rem}
 .source-panel article:target{border-color:var(--focus);outline-color:var(--focus)}
 .home-title{text-align:center;margin:1.5rem 0 .8rem}
 .home-search form{display:flex;flex-wrap:wrap;justify-content:center;align-items:center;gap:.55rem}
+.home-search form+form{margin-top:1.25rem;padding-top:1rem;border-top:1px solid var(--line)}
+.home-search form p{flex-basis:100%;margin:0;text-align:center;color:var(--subtle);font-size:.9rem}
 .home-search input[type=text],.home-search input[name=q]{width:min(100%,24rem);box-sizing:border-box}
 .home-grid{grid-template-columns:repeat(2,minmax(0,1fr));align-items:start}
 .home-grid details{margin:.55rem 0 0;padding:.45rem .6rem}

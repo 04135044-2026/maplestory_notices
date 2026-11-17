@@ -24,7 +24,7 @@ import { announcementUrl, collectAnnouncements, discoveryWindow, officialAnnounc
 import { sourceTracking } from './tracking.mjs';
 import { jobFailure, METHOD_BATCH, SOURCE_BATCH, sourceAttempt } from './jobs.mjs';
 import { DEFAULT_SCHEDULE, dueCheck, validSchedule } from './schedule.mjs';
-import { defaultEmbeddingModel, semanticDocuments, semanticSearch } from './semantic-search.mjs';
+import { defaultEmbeddingModel, semanticDocuments, semanticRewardCategory, semanticSearch } from './semantic-search.mjs';
 import { analysisFile, analyzedItems, analyzeSnapshot, fieldLabels, primaryNotice, sourceRoute } from './notice-analysis.mjs';
 import { officialImageOrigins, originalBlocks } from './original-source.mjs';
 import { activeDataDirectory, createBackup, readBackupUpload, restoreBackup } from './backup.mjs';
@@ -343,9 +343,9 @@ function watchButton(entry, watches, back) {
     (saved ? '取消關注' : entry.reward ? '關注獎勵' : '關注活動') + '</button></form>';
 }
 
-function catalogResults(entries, saved, watches, back = '/') {
+function catalogResults(entries, saved, watches, back = '/', flat = false) {
   if (!entries.length) return '<p>找不到符合的活動或目前可領取的獎勵。</p>';
-  return activityGroups(entries, entry => entry.item, ({ item, method: target, reward, state, periods, image, availability }) => {
+  const render = ({ item, method: target, reward, state, periods, image, availability }) => {
     const legacy = saved && reward && item.title === activity && target.title === method &&
       matchingRewards(saved.notice, reward.name).some(entry => entry.name === reward.name && entry.quantity === reward.quantity);
     const href = legacy ? '/note?q=' + encodeURIComponent(reward.name) + '#method' :
@@ -364,7 +364,9 @@ function catalogResults(entries, saved, watches, back = '/') {
         reward ? '<p>尚無外觀圖片</p>' : '') +
       '<p><a href="' + href + '">' + (reward ? '查看取得方式 →' : '查看活動 →') + '</a></p>' +
       (watches ? watchButton({ item, method: target, reward }, watches, back) : '') + '</article>';
-  });
+  };
+  return flat ? '<div class="activity-grid">' + entries.map(render).join('') + '</div>' :
+    activityGroups(entries, entry => entry.item, render);
 }
 
 function primaryTabs(active) {
@@ -500,13 +502,13 @@ function calendarPage(activities, all, month, today, filters, message, selected 
 
 function managementPage(saved, status, hasSnapshot) {
   return page('公告管理', primaryTabs('/manage') + '<h1>公告管理</h1>' +
+    '<p>第一次使用：先設定 AI 模型，再匯入官方公告並檢查整理結果。也可以先匯入公告，之後再設定模型。</p>' +
     '<nav class="site-tabs" aria-label="公告管理功能">' +
-    '<a href="/discover">公告探索</a><a href="/tracking">活動來源追蹤</a><a href="/schedule">每日更新排程</a><a href="/jobs">批次進度與重試</a>' +
-    '<a href="/updates">來源與摘要更新</a>' +
-    (hasSnapshot ? '<a href="/review">檢視與調整公告拆分</a><a href="/corrections">來源關聯與更正</a><a href="/edits">修正摘要</a>' : '') + '</nav>' +
+    '<a href="/discover">匯入與查找官方公告</a><a href="/tracking">查看追蹤中的公告</a><a href="/schedule">設定每日自動更新</a><a href="/jobs">查看處理進度與重試</a>' +
+    '<a href="/updates">設定 AI 模型與更新摘要</a>' +
+    (hasSnapshot ? '<a href="/review">核對公告與活動歸屬</a><a href="/corrections">關聯公告與更正</a><a href="/edits">手動修正活動摘要</a>' : '') + '</nav>' +
     (status ? '<p role="status">' + escape(status) + '</p>' : '') +
-    (saved?.capturedAt ? '<p>已保存摘要 · ' + escape(formatTimestamp(saved.capturedAt)) + '</p>' : '') +
-    '<form method="post" action="/import"><button>匯入並整理公告 19129</button></form>');
+    (saved?.capturedAt ? '<p>已保存摘要 · ' + escape(formatTimestamp(saved.capturedAt)) + '</p>' : ''));
 }
 
 function home(saved, query, now, hasSnapshot = Boolean(saved), listing, assist, semanticEnabled = false) {
@@ -525,8 +527,13 @@ function home(saved, query, now, hasSnapshot = Boolean(saved), listing, assist, 
     escape(query) + '"> ' + (listing ? filterOptions('state', statuses, listing.filters.status, '活動狀態') + ' ' +
       filterOptions('type', rewardTypes, listing.filters.type, '獎勵類型') + ' <label><input type="checkbox" name="watched" value="1"' +
       (listing.filters.watched ? ' checked' : '') + '>只看關注</label> ' : '') +
-    '<button>搜尋</button>' + (semanticEnabled ? ' <button formmethod="post" formaction="/semantic/search">語意搜尋</button>' : '') + (offerAssist ? ' <button formmethod="post" formaction="/assist/search">用 Agent 搜尋</button>' : '') +
-    (hasSearch ? '<a class="search-home-link" href="/">回首頁</a>' : '') + '</form></div>' +
+    '<button>搜尋名稱</button>' + (offerAssist ? ' <button formmethod="post" formaction="/assist/search">用 Agent 搜尋</button>' : '') +
+    (hasSearch ? '<a class="search-home-link" href="/">回首頁</a>' : '') + '</form>' +
+    '<form method="post" action="/semantic/search"><label for="semantic-q">口語搜尋活動與獎勵</label> ' +
+    '<input id="semantic-q" name="q" maxlength="500" placeholder="例如：我想知道活動椅子怎麼取得"' +
+    (semanticEnabled ? ' required' : ' disabled') + '> <button' + (semanticEnabled ? '' : ' disabled') + '>語意搜尋</button>' +
+    '<p>可以用口語查找進行中或仍可領獎的活動，點結果查看取得方式。' +
+    (semanticEnabled ? '需啟動本機 Ollama 和向量模型。' : '此功能需要 PostgreSQL、pgvector 和本機 Ollama。') + '</p></form></div>' +
     (assist ? '<section><h2>Agent 搜尋結果</h2>' + (assist.error ? '<p role="alert">' + escape(assist.error) + '</p>' :
       assist.matches.length ? catalogResults(assist.matches, null, listing?.watches, back) + assistantModel(assist.metadata) :
         '<p>已收錄的活動與獎勵沒有明確符合的結果。</p>') + '</section>' : '') +
@@ -686,14 +693,27 @@ async function formData(req, limit = 100_000) {
   return new URLSearchParams(body);
 }
 
+export function sortedActivityFamilies(activities, now) {
+  return groupByActivity(activities, item => item).map(([title, items]) => {
+    const states = items.flatMap(item => [activityState(timeline(item), now), ...item.methods
+      .filter(method => method.kind === 'method').map(method => activityState(timeline(item, method), now))]);
+    const rank = states.some(state => state === '進行中' || state === '仍可領獎') ? 0 :
+      states.every(state => state === '已結束') ? 2 : 1;
+    const starts = items.map(item => versionPeriod(item).start?.date ?? timeline(item).participation.start?.date)
+      .filter(date => date && date !== '1900-01-01').sort();
+    return { title, items, rank, start: starts[0] ?? '' };
+  }).sort((a, b) => a.rank - b.rank || b.start.localeCompare(a.start) || a.title.localeCompare(b.title, 'zh-Hant'));
+}
+
 function activityList(activities, query, now, pending = '') {
-  const entries = groupByActivity(activities, item => item).flatMap(([, items]) => items.flatMap(item => {
+  const families = sortedActivityFamilies(activities, now);
+  const entries = families.flatMap(({ items }) => items.flatMap(item => {
     const children = items.length === 1 ? childActivities(item) : [];
     return children.length ? children : [{ item, title: item.title, href: '/activities/' + item.id }];
   })).filter(({ item, method, title }) => !query || familyTitle(item).includes(query) || title.includes(query) ||
     (method ? method.title.includes(query) : item.methods.some(entry => entry.title.includes(query))));
   return page('活動清單', primaryTabs('/') + '<h1>全部活動' +
-    '</h1><p>' + link + '</p>' + (pending ? '<p>' + escape(pending) + ' <a href="/review">檢視來源</a></p>' : '') +
+    '</h1><p>進行中或仍可領獎的主活動優先；各組依主活動開始日期由新到舊排列，日期未知的排在各組最後。</p><p>' + link + '</p>' + (pending ? '<p>' + escape(pending) + ' <a href="/review">檢視來源</a></p>' : '') +
     '<form><label for="q">活動名稱</label> <input id="q" name="q" value="' + escape(query) +
     '"> <button>搜尋</button></form>' +
     (entries.length ? activityGroups(entries, entry => entry.item, ({ item, method, title, href }) => {
@@ -1234,14 +1254,6 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
     const jobs = await readSaved('jobs.json') ?? {};
     jobs[id] = job;
     await save('jobs.json', JSON.stringify(jobs));
-  }
-  async function semanticSources() {
-    const source = await readSaved('activity-source.json') ?? await readSaved();
-    const registry = await discoveryRegistry();
-    return [
-      ...(source?.snapshot ? [{ id: primaryNotice, snapshot: source.snapshot, title: '公告 19129', url: official }] : []),
-      ...Object.values(registry.entries).filter(entry => !entry.existing).map(({ id, snapshot, title, url }) => ({ id, snapshot, title, url })),
-    ];
   }
   async function discoveryWork(registry, base, clock, { mode, input } = {}) {
     let items = await browsableItems(base);
@@ -1953,25 +1965,21 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
         let results;
         let message;
         try {
-          const sources = await semanticSources();
-          const docs = semanticDocuments(await Promise.all(sources.map(async entry => ({
-            ...entry, html: await readData(entry.snapshot, 'utf8'),
-          }))));
-          results = await semanticSearch(store, docs, query, embeddingModel, embeddingFetch);
-          if (fingerprint(sources) !== fingerprint(await semanticSources())) {
-            throw new Problem('公告剛更新，請重新搜尋。', 409);
-          }
+          const candidates = async () => semanticDocuments(
+            await browsableItems(await readSaved('activity-source.json') ?? await readSaved()),
+            query, now(), await readSaved('official-images.json') ?? {});
+          const docs = await candidates();
+          const ranked = await semanticSearch(store, docs, query, embeddingModel, embeddingFetch);
+          const current = new Map((await candidates()).map(doc => [doc.key, doc.entry]));
+          results = ranked.flatMap(({ key }) => current.has(key) ? [current.get(key)] : []);
         } catch (error) {
           message = '語意搜尋暫不可用。' + (error instanceof Problem ? error.message : '請確認本機 PostgreSQL 已啟用 pgvector。');
         }
-        return respond(200, page('語意搜尋候選', primaryTabs('/') + '<h1>語意搜尋候選</h1>' +
+        return respond(200, page('語意搜尋結果', primaryTabs('/') + '<h1>語意搜尋結果</h1>' +
           '<form method="post"><label>搜尋問題 <input name="q" value="' + escape(query) +
-          '" maxlength="500" required></label> <button>語意搜尋</button></form><p><a href="/?q=' +
-          encodeURIComponent(query) + '">改用名稱搜尋</a></p>' +
-          (message ? '<p role="status">' + escape(message) + '</p>' : results.length ?
-            '<ol>' + results.map(result => '<li><article><h2>' + escape(result.label) + '</h2><p>' +
-              escape(result.passage) + '</p><a href="' + escape(result.href) + '">核對原文</a></article></li>').join('') + '</ol>' :
-            '<p>目前沒有可供檢索的公告原文。</p>')));
+          '" placeholder="例如：我想知道活動椅子怎麼取得" maxlength="500" required></label> <button>語意搜尋</button></form>' +
+          '<p><a href="/?q=' + encodeURIComponent(semanticRewardCategory(query)) + '">改用名稱搜尋</a></p>' +
+          (message ? '<p role="status">' + escape(message) + '</p>' : catalogResults(results, null, null, '/', true))));
       }
       const agentSearch = req.method === 'POST' && url.pathname === '/assist/search';
       if ((req.method === 'GET' && url.pathname === '/') || agentSearch) {
