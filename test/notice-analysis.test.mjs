@@ -110,7 +110,7 @@ test('口語查詢依椅子分類連到目前可參加的活動，Ollama 離線�
     if (offline) throw new Error('offline');
     const { input } = JSON.parse(request.body);
     batches.push(input);
-    return Response.json({ embeddings: input.map(text => text.includes('怪物') || text.includes('擊殺') ? [1, 0] : [0, 1]) });
+    return Response.json({ embeddings: input.map(text => text === '火星郵局' ? [1, 0] : [0, 1]) });
   } });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   t.after(async () => {
@@ -128,8 +128,8 @@ test('口語查詢依椅子分類連到目前可參加的活動，Ollama 離線�
   });
   assert.equal((await post('/discover/import', { url: official })).status, 303);
   assert.equal(batches.length, 0);
-  const ask = async () => {
-    const response = await post('/semantic/search', { q: '活動椅子有哪些' });
+  const ask = async (q = '活動椅子有哪些') => {
+    const response = await post('/semantic/search', { q });
     assert.equal(response.status, 200);
     return response.text();
   };
@@ -146,9 +146,12 @@ test('口語查詢依椅子分類連到目前可參加的活動，Ollama 離線�
   const evidence = first.match(/href="(\/activities\/[^"#]+#[^"]+)">星光寶座/)?.[1];
   assert.ok(evidence);
   assert.match(await (await fetch(base + evidence.split('#')[0])).text(), /舊內容/);
+  assert.equal(batches.length, 0, '分類命中時不呼叫向量服務');
+  await ask('最近能拿什麼紀念品');
   const count = batches.length;
-  await ask();
+  await ask('最近能拿什麼紀念品');
   assert.equal(batches.length, count + 1, '再次搜尋只向量化查詢文字');
+  assert.match(await ask('火星郵局'), /找不到符合的活動或目前可領取的獎勵/);
   label = '最新內容';
   assert.equal((await post('/discover/import', { url: official })).status, 303);
   await waitFor(label);
@@ -156,7 +159,8 @@ test('口語查詢依椅子分類連到目前可參加的活動，Ollama 離線�
   assert.match(second, /最新內容/);
   assert.doesNotMatch(second, /舊內容/);
   offline = true;
-  assert.match(await ask(), /語意搜尋暫不可用/);
+  assert.match(await ask(), /星光寶座/);
+  assert.match(await ask('最近能拿什麼紀念品'), /語意搜尋暫不可用/);
   assert.equal((await fetch(base + '/?q=簽到')).status, 200);
 });
 

@@ -415,7 +415,9 @@ test('玩家可問活動、比較方法及用自然語言搜尋，模型只能�
   let searchCalls = 0;
   let codexCalls = 0;
   let imageVersion = 'original';
-  const server = website({ dir, now: () => new Date('2026-11-12T20:00:00+08:00'),
+  const activeDate = '2026-11-12T20:00:00+08:00';
+  let date = activeDate;
+  const server = website({ dir, now: () => new Date(date),
     downloadImage: async () => ({ bytes: Buffer.from(imageVersion), mime: 'image/png', version: imageVersion }),
     summarizeImage: async () => ({ text: '待核對的辨識稿' }),
     generatePlayerAssistance: async (_instruction, input) => {
@@ -468,15 +470,28 @@ test('玩家可問活動、比較方法及用自然語言搜尋，模型只能�
     const draft = await post(imageAction, { action: 'recognize' }).then(response => response.text());
     assert.match(draft, /待人工核對[\s\S]*待核對的辨識稿/);
     assert.match(await askImage(), /沒有足夠資料回答/);
-    const verified = { action: 'verify-text', imageVersion, imageText: '技能等級上限為 5 級（測試資料）' };
+    const imageReward = '敵對者的恢復方塊';
+    const findImageReward = () => text('/?q=' + encodeURIComponent(imageReward));
+    const verified = { action: 'verify-text', imageVersion, rewardMethod: methodId(chairItem),
+      imageText: '技能等級上限為 5 級（測試資料）\n獎勵：' + imageReward + '｜25 個夢境碎片' };
+    assert.doesNotMatch(await findImageReward(), /<h3>.*敵對者的恢復方塊/);
     assert.match(await (await post(imageAction, verified)).text(), /已核對的官方圖片文字[\s\S]*技能等級上限為 5 級/);
     assert.match(await askImage(), /技能等級上限為 5 級[\s\S]*已核對文字[\s\S]*\?v=original/);
+    assert.match(await findImageReward(), /<h3>.*敵對者的恢復方塊[\s\S]*25 個夢境碎片/);
+    const redraft = await (await post(imageAction, { action: 'recognize' })).text();
+    assert.match(redraft, /<details class="image-note-editor" open><summary>AI 辨識稿 · 待人工核對/);
+    assert.match(redraft, /<textarea name="imageText"[^>]*>待核對的辨識稿<\/textarea>/);
+    assert.match(await findImageReward(), /<h3>.*敵對者的恢復方塊/);
+    date = '2026-12-02T00:00:00+08:00';
+    assert.doesNotMatch(await findImageReward(), /<h3>.*敵對者的恢復方塊/);
+    date = activeDate;
     await post(imageAction, { action: 'remove-text', imageVersion });
     assert.match(await askImage(), /沒有足夠資料回答/);
     await post(imageAction, verified);
     imageVersion = 'replacement';
     await post(imageAction, { action: 'download' });
     assert.match(await askImage(), /沒有足夠資料回答/);
+    assert.doesNotMatch(await findImageReward(), /<h3>.*敵對者的恢復方塊/);
     assert.equal((await post(imageAction, verified)).status, 409);
     assert.match(await text('/?q=那個烤章魚的椅子怎麼拿'), /用 Agent 搜尋/);
     assert.equal(searchCalls, 0);

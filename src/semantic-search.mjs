@@ -3,15 +3,12 @@ import { methodContext } from './catalog.mjs';
 import { searchCatalog } from './search.mjs';
 import { rewardAvailability } from './periods.mjs';
 import { Problem } from './notice.mjs';
+import { semanticKeywords } from './search-terms.mjs';
 
 export const defaultEmbeddingModel = 'embeddinggemma';
-export const semanticRewardCategory = query => query.normalize('NFKC').includes('椅子') ? '椅子' : '';
-
-export function semanticDocuments(items, query, now, images) {
-  const category = semanticRewardCategory(query);
+export function semanticDocuments(items, now, images) {
   return searchCatalog(items, { query: '' }, now, images, { includeMethods: true })
-    .filter(({ state, reward }) => ['進行中', '仍可領獎'].includes(state) &&
-      (!category || reward?.category === category))
+    .filter(({ state }) => ['進行中', '仍可領獎'].includes(state))
     .map(entry => ({ ...entry, availability: entry.reward ? rewardAvailability(entry.periods, now) : null }))
     .filter(entry => !entry.reward || entry.availability)
     .map(entry => {
@@ -48,6 +45,8 @@ export async function ollamaEmbeddings(model, input, fetchImpl = fetch) {
 }
 
 export async function semanticSearch(store, documents, query, model, fetchImpl) {
+  const matches = semanticKeywords(documents, query);
+  if (matches.length) return matches;
   if (!documents.length) return [];
   if (!store?.vectorSearch) throw new Problem('這個網站需要以 PostgreSQL 模式啟動。', 422);
   const unique = new Map();

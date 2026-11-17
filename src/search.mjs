@@ -1,6 +1,7 @@
 import { methodContext } from './catalog.mjs';
 import { activityState, rewardAvailability, timeline } from './periods.mjs';
 import { imageKey } from './images.mjs';
+import { normalizeSearch, rewardKeyword } from './search-terms.mjs';
 
 export const rewardTypes = ['外觀與收藏', '成長與強化', '貨幣與點數', '其他'];
 export const statuses = ['尚未開始', '進行中', '仍可領獎', '尚未開領', '時間待確認', '已結束'];
@@ -15,13 +16,14 @@ function rewardClassification(name, context) {
   return { type: rewardTypes[3] };
 }
 
-export function activityRewards(item, method) {
+export function activityRewards(item, method, images = {}) {
   const sources = methodContext(item, method).filter(source => method.sourceIds.includes(source.id) || item.local.includes(source));
   const possible = sources.some(source => /可能獲得的獎勵/.test(source.text));
   const rewards = [];
-  function add(name, quantity, source, { group, context, condition } = {}) {
+  function add(name, quantity, source, { group, context, condition, imageSource } = {}) {
     if (!name) return;
-    const reward = { name, quantity, source, possible, group, ...rewardClassification(name, context), condition };
+    const reward = { name, quantity, source, possible: imageSource ? false : possible, group,
+      ...rewardClassification(name, context), condition, imageSource };
     const index = rewards.findIndex(prior => prior.name === name && prior.group === group);
     if (index < 0) rewards.push(reward);
     else if ((!rewards[index].condition && condition) || (!rewards[index].category && reward.category)) {
@@ -39,7 +41,7 @@ export function activityRewards(item, method) {
           if (/^\d+$/.test(count)) add(name, count, source.id, { group });
         }
       }
-    } else if (rows[0]?.at(-2) === '獎勵' && rows[0]?.at(-1) === '數量') {
+    } else if (['獎勵', '獎勵名稱'].includes(rows[0]?.at(-2)) && rows[0]?.at(-1) === '數量') {
       for (const row of rows.slice(1)) {
         if (/^\d+$/.test(row.at(-1))) add(row.at(-2), row.at(-1), source.id, { context: row.at(-3) });
       }
@@ -55,18 +57,26 @@ export function activityRewards(item, method) {
       }
     }
   }
+  for (const url of new Set(item.images ?? [])) {
+    const key = imageKey(url);
+    const record = images[key];
+    const note = record?.verifiedText?.[item.id];
+    if (!record?.version || note?.version !== record.version || note.methodId !== method.id) continue;
+    for (const line of note.text.split(/\r?\n/)) {
+      const match = line.match(/^獎勵[：:]\s*([^｜|]+?)(?:\s*[｜|]\s*(.+))?\s*$/u);
+      if (!match) continue;
+      const [, name, condition] = match;
+      add(name.trim(), undefined, key, { condition: condition?.trim(), imageSource: key });
+    }
+  }
   return rewards;
-}
-
-function normalizeSearch(name) {
-  return name.normalize('NFKC').toLocaleLowerCase('zh-TW').replaceAll('露西妲', '露希妲');
 }
 
 export function searchCatalog(items, filters, now, images, { includeMethods = false, onlyAvailable = false } = {}) {
   const { query, status, type } = filters;
   const needle = normalizeSearch(query);
   const match = name => normalizeSearch(name).includes(needle);
-  const rewardMatches = reward => match(reward.name) || (reward.category && match(reward.category));
+  const rewardMatches = reward => rewardKeyword(reward, query);
   const candidates = [];
   const matchedRewardOwners = new Set();
   for (const item of items) {
@@ -81,7 +91,7 @@ export function searchCatalog(items, filters, now, images, { includeMethods = fa
     if (!query && !type && !includeMethods) continue;
     for (const entry of methods) {
       const { method, availability } = entry;
-      const rewards = activityRewards(item, method);
+      const rewards = activityRewards(item, method, images);
       if (onlyAvailable && query && rewards.some(rewardMatches)) {
         matchedRewardOwners.add(item);
         matchedRewardOwners.add(method);

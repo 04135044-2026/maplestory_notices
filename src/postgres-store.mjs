@@ -109,6 +109,7 @@ export async function openPostgresStore({ connectionString, namespace = 'maple-d
       }
       const result = await pool.query(`SELECT key FROM maple_notice_vectors
         WHERE dataset = $1 AND model = $2 AND key = ANY($3::text[]) AND vector_dims(embedding) = $4
+          AND (embedding <=> $5::vector) <= 0.45
         ORDER BY embedding <=> $5::vector, key LIMIT 12`,
       [target, model, keys, query.length, JSON.stringify(query)]);
       return result.rows.map(row => row.key);

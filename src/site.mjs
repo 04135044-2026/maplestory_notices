@@ -24,7 +24,7 @@ import { announcementUrl, collectAnnouncements, discoveryWindow, officialAnnounc
 import { sourceTracking } from './tracking.mjs';
 import { jobFailure, METHOD_BATCH, SOURCE_BATCH, sourceAttempt } from './jobs.mjs';
 import { DEFAULT_SCHEDULE, dueCheck, validSchedule } from './schedule.mjs';
-import { defaultEmbeddingModel, semanticDocuments, semanticRewardCategory, semanticSearch } from './semantic-search.mjs';
+import { defaultEmbeddingModel, semanticDocuments, semanticSearch } from './semantic-search.mjs';
 import { analysisFile, analyzedItems, analyzeSnapshot, fieldLabels, primaryNotice, sourceRoute } from './notice-analysis.mjs';
 import { officialImageOrigins, originalBlocks } from './original-source.mjs';
 import { activeDataDirectory, createBackup, readBackupUpload, restoreBackup } from './backup.mjs';
@@ -781,14 +781,22 @@ function verifiedImageSources(item, records) {
   });
 }
 
-function imageNoteEditor(item, record) {
+function imageNoteEditor(item, record, showDraft = false) {
+  if (!record?.version) return '<p>手動填寫前請先保存原圖，也可直接按 AI 辨識。</p>';
   const note = record?.verifiedText?.[item.id];
-  const confirmed = note?.version === record?.version ? note : undefined;
-  if (!record?.recognition && !confirmed) return '';
-  return '<details class="image-note-editor"><summary>' + (confirmed ? '圖片文字 · 已加入活動筆記' : '圖片辨識 · 待人工核對') + '</summary>' +
+  const confirmed = note?.version === record.version ? note : undefined;
+  const methods = item.methods.filter(method => method.kind === 'method');
+  const draft = showDraft && record.recognition;
+  const label = draft ? 'AI 辨識稿 · 待人工核對' : confirmed ? '手動填寫 · 已保存核對內容' :
+    record.recognition ? '手動填寫或編修辨識稿 · 待人工核對' : '手動填寫圖片獎勵';
+  return '<details class="image-note-editor"' + (draft ? ' open' : '') + '><summary>' + label + '</summary>' +
     '<input type="hidden" name="imageVersion" value="' + escape(record.version) + '">' +
-    '<div class="player-question"><label>對照原圖後，保留適用於本活動的文字<textarea name="imageText" rows="5" maxlength="16000">' +
-    escape(confirmed?.text ?? record.recognition.text) + '</textarea></label>' +
+    '<div class="player-question"><label>獎勵取得方式 <select name="rewardMethod"><option value="">只保存筆記文字</option>' +
+    methods.map(method => '<option value="' + escape(method.id) + '"' + (confirmed?.methodId === method.id ? ' selected' : '') +
+      '>' + escape(method.title) + '</option>').join('') + '</select></label>' +
+    '<p>要加入搜尋，請選擇取得方式，每行填寫「獎勵：名稱｜兌換條件」。</p>' +
+    '<label>已核對的圖片文字<textarea name="imageText" rows="5" maxlength="16000">' +
+    escape(draft?.text ?? confirmed?.text ?? record.recognition?.text ?? '') + '</textarea></label>' +
     '<div><button name="action" value="verify-text">核對並加入活動筆記</button> ' +
     (confirmed ? '<button name="action" value="remove-text">移除已核對文字</button>' : '') + '</div></div>' +
     (confirmed && record.recognition ? '<details><summary>查看圖片辨識稿</summary><pre>' +
@@ -825,7 +833,7 @@ function comparisonPage(methods, from, selections = [], result, error) {
     (error ? '<p role="alert">' + escape(error) + '</p>' : '') + output);
 }
 
-function activityDetail(item, now, summaries = {}, status = '', imageRecords = {}, provider = 'gemini', watches, edits = {}, issues = [], movedGroups = []) {
+function activityDetail(item, now, summaries = {}, status = '', imageRecords = {}, provider = 'gemini', watches, edits = {}, issues = [], movedGroups = [], draftImage) {
   const periods = timeline(item);
   const showPeriod = (label, period, field) => {
     const change = period.change;
@@ -901,6 +909,7 @@ function activityDetail(item, now, summaries = {}, status = '', imageRecords = {
     }).join('');
     const rewardLabel = chances.some(source => source.text.includes('可能獲得')) ? '可能獎勵' : '獎勵';
     const shortRewards = rewards.filter(source => !source.text.includes('\n'));
+    const imageRewards = activityRewards(item, method, imageRecords).filter(reward => reward.imageSource);
     const ownImages = method.images.filter(url => !item.sharedImages?.includes(url) || method.sourceIds.length === 0);
     const methodPeriods = timeline(item, method);
     const procedure = { label: '進行方式', sources: steps ? [steps] : [] };
@@ -919,7 +928,10 @@ function activityDetail(item, now, summaries = {}, status = '', imageRecords = {
       facts(procedure.label, procedure.sources) + facts(rewardLabel, shortRewards, procedure) + facts('重要限制', limits, reset) +
       facts('成本及付費條件', costs) +
       facts('機率', chances.filter(source => /機率/.test(source.text)))) +
-      '</dl>' + originalFlow(methodContext(item, method)
+      '</dl>' + (imageRewards.length ? '<ul>' + imageRewards.map(reward => '<li>' + escape(reward.name) +
+        (reward.condition ? ' · ' + escape(reward.condition) : '') +
+        ' · <a href="#verified-image-' + reward.imageSource + '">查看核對文字與原圖</a></li>').join('') + '</ul>' : '') +
+      originalFlow(methodContext(item, method)
         .filter(source => method.sourceIds.includes(source.id) || item.local.includes(source)), ownImages,
         '公告表格與圖片', method.sectionHeadingIds) + '<details><summary>摘要整理</summary>' +
       (summary || Object.keys(manual).length ? '<dl>' + editableSummary + '</dl>' : '<p>尚未整理這個方法。</p>') +
@@ -949,7 +961,7 @@ function activityDetail(item, now, summaries = {}, status = '', imageRecords = {
         '<li id="' + (method.legacyId ?? method.id) + '"><a href="/activities/' + group.id + '#' + method.id + '">' +
         escape(method.title) + '</a></li>').join('') + '</ul></section>').join('') +
     '<div id="verified-image-notes">' + (imageNotes.length ? '<section><h2>已核對的官方圖片文字</h2>' +
-    imageNotes.map(source => '<article><h3>' + escape(source.scope) + '</h3><pre>' + escape(source.text) +
+    imageNotes.map(source => '<article id="verified-image-' + source.id + '"><h3>' + escape(source.scope) + '</h3><pre>' + escape(source.text) +
       '</pre><details class="image-preview"><summary>預覽官方原圖</summary><img loading="lazy" src="' + source.image +
       '" alt="核對用官方原圖"></details></article>').join('') + '</section>' : '') + '</div>' +
     '<section id="player-tools"><h2>玩家查詢</h2><div class="player-tools"><a href="/compare?activity=' + item.id +
@@ -973,9 +985,11 @@ function activityDetail(item, now, summaries = {}, status = '', imageRecords = {
         '<form method="post" action="/activities/' + item.id + '/images/' + key + '#image-' + key + '">' +
         '<button name="action" value="download">保存／重試原圖</button> ' +
         '<button name="action" value="' + (selected ? 'remove' : 'select') + '">' + (selected ? '移出' : '選入') + '懶人包</button> ' +
-        (shop ? '' : '<button name="action" value="recognize">用預設模型辨識這張圖</button>' +
+        '<button name="action" value="recognize">用 AI 辨識這張圖</button>' +
+        (shop ? '' :
           '<p><label>已核對的單一獎勵名稱 <input name="appearance" maxlength="100" value="' + escape(record?.appearance || '') +
-          '"></label> <button name="action" value="confirm">保存外觀對應</button></p>' + imageNoteEditor(item, record)) + '</form></article>';
+          '"></label> <button name="action" value="confirm">保存外觀對應</button></p>') +
+        imageNoteEditor(item, record, draftImage === key) + '</form></article>';
     }).join('') + '</details><script src="/image-actions.js" defer></script>');
 }
 
@@ -1528,9 +1542,10 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
           day: params.get('day') ?? '', expanded: params.get('expanded') === '1',
           changed: all.filter(activity => calendarExportChanged(activity, history[activity.item.id])).map(activity => activity.item.title) };
         const watches = filters.watched ? await readSaved('watches.json') ?? {} : {};
+        const images = filters.watched ? await readSaved('official-images.json') ?? {} : {};
         const activities = all.filter(({ item }) => (!filters.family || familyTitle(item) === filters.family) &&
           (!filters.watched || watches[item.id] || item.methods.filter(method => method.kind === 'method').some(method =>
-            activityRewards(item, method).some(reward => watches[watchKey({ item, method, reward })]))));
+            activityRewards(item, method, images).some(reward => watches[watchKey({ item, method, reward })]))));
         if (req.method === 'GET') return respond(200, calendarPage(activities, all, month, today, filters));
         const ids = [...new Set(params.getAll('activity'))];
         const selected = activities.filter(({ item }) => ids.includes(item.id));
@@ -1967,7 +1982,7 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
         try {
           const candidates = async () => semanticDocuments(
             await browsableItems(await readSaved('activity-source.json') ?? await readSaved()),
-            query, now(), await readSaved('official-images.json') ?? {});
+            now(), await readSaved('official-images.json') ?? {});
           const docs = await candidates();
           const ranked = await semanticSearch(store, docs, query, embeddingModel, embeddingFetch);
           const current = new Map((await candidates()).map(doc => [doc.key, doc.entry]));
@@ -1978,7 +1993,7 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
         return respond(200, page('語意搜尋結果', primaryTabs('/') + '<h1>語意搜尋結果</h1>' +
           '<form method="post"><label>搜尋問題 <input name="q" value="' + escape(query) +
           '" placeholder="例如：我想知道活動椅子怎麼取得" maxlength="500" required></label> <button>語意搜尋</button></form>' +
-          '<p><a href="/?q=' + encodeURIComponent(semanticRewardCategory(query)) + '">改用名稱搜尋</a></p>' +
+          '<p><a href="/?q=' + encodeURIComponent(query) + '">改用名稱搜尋</a></p>' +
           (message ? '<p role="status">' + escape(message) + '</p>' : catalogResults(results, null, null, '/', true))));
       }
       const agentSearch = req.method === 'POST' && url.pathname === '/assist/search';
@@ -2144,7 +2159,7 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
           if (!['download', 'select', 'remove', 'recognize', 'confirm'].includes(action) && !editsText) {
             throw new Problem('圖片操作不支援。');
           }
-          if (shop && (editsText || ['recognize', 'confirm'].includes(action))) {
+          if (shop && action === 'confirm') {
             throw new Problem('這張圖片使用原圖規則。');
           }
           if (editsText && (!old?.version || old.version !== form.get('imageVersion'))) {
@@ -2181,7 +2196,11 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
             if (action === 'verify-text') {
               const text = form.get('imageText')?.trim() ?? '';
               if (!text || text.length > 16000) throw new Problem('請輸入 1–16000 字的已核對內容。');
-              record.verifiedText[item.id] = { text, version: record.version };
+              const methodId = form.get('rewardMethod');
+              if (methodId && !item.methods.some(method => method.kind === 'method' && method.id === methodId)) {
+                throw new Problem('請選擇此活動的獎勵取得方式。');
+              }
+              record.verifiedText[item.id] = { text, version: record.version, ...(methodId ? { methodId } : {}) };
             } else delete record.verifiedText[item.id];
           }
           imageRecords[extra] = record;
@@ -2202,8 +2221,10 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
           }
           const methods = await readSaved('activity-methods.json');
           const status = action === 'verify-text' ? '已將核對文字加入活動筆記。' :
+            action === 'recognize' ? 'AI 辨識稿已產生。請對照原圖核對後再保存。' :
             action === 'remove-text' ? '已從活動筆記移除核對文字。' : '已更新官方圖片。';
-          return respond(200, activityDetail(item, now(), methods?.methods ?? {}, status, imageRecords, await preferredProvider())
+          return respond(200, activityDetail(item, now(), methods?.methods ?? {}, status, imageRecords,
+            await preferredProvider(), undefined, {}, [], [], action === 'recognize' ? extra : undefined)
             .replace('<details id="image-library">', '<details id="image-library" open>'));
         }
         if (!item || extra !== undefined) throw new Problem('找不到活動。', 404);
