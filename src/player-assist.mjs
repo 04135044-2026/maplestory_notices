@@ -1,5 +1,6 @@
 import { methodContext } from './catalog.mjs';
 import { Problem } from './notice.mjs';
+import { selectAnswerEvidence } from './answer-evidence.mjs';
 
 export const comparisonFields = {
   eligibility: '參加資格', steps: '取得方式', rewards: '獎勵', limits: '次數與期限', costs: '成本',
@@ -40,15 +41,17 @@ export function playerAssistant(generate) {
   };
 }
 
-export async function answerPlayer(item, question, ask, imageSources = []) {
-  const sources = sourceGroup('Q', item, [...item.sources, ...imageSources]);
-  if (!sources.length) return { facts: [] };
-  const ids = new Map(item.sources.map((source, index) => [source.id, sources[index].id]));
+export async function answerPlayer(item, question, ask, imageSources = [], rankEvidence) {
+  const selected = await selectAnswerEvidence(item, question, imageSources, rankEvidence);
+  if (!selected.length) return { facts: [], incomplete: true };
+  const sources = sourceGroup('Q', item, selected);
   const { result, metadata } = await ask(
     '回答這個活動的玩家問題，每個要點附適用的來源 ID。資料不足或有衝突時，只列能確定且與問題相關的事實，並將 incomplete 設為 true。完全無法回答則回傳空 facts。',
-    { question, activity: item.title, methods: item.methods.filter(method => method.kind === 'method').map(method => ({
-      title: method.title, sources: methodContext(item, method).map(source => ids.get(source.id)),
-    })), sources: modelSources(sources) }, { facts: listOf(factSchema(sources.map(source => source.id))), incomplete: { type: 'boolean' } });
+    { question, activity: item.title, methods: item.methods.filter(method => method.kind === 'method').map(method => {
+      const ids = new Set(methodContext(item, method).map(source => source.id));
+      return { title: method.title, sources: sources.flatMap((source, index) =>
+        ids.has(selected[index].id) || selected[index].methodId === method.id ? [source.id] : []) };
+    }), sources: modelSources(sources) }, { facts: listOf(factSchema(sources.map(source => source.id))), incomplete: { type: 'boolean' } });
   if (typeof result?.incomplete !== 'boolean') throw new Problem('模型沒有標明資料是否完整，請重試。', 502);
   return { facts: validateFacts(result.facts, sources), incomplete: result.incomplete, metadata };
 }

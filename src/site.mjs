@@ -24,7 +24,7 @@ import { announcementUrl, collectAnnouncements, discoveryWindow, officialAnnounc
 import { sourceTracking } from './tracking.mjs';
 import { jobFailure, METHOD_BATCH, SOURCE_BATCH, sourceAttempt } from './jobs.mjs';
 import { DEFAULT_SCHEDULE, dueCheck, validSchedule } from './schedule.mjs';
-import { defaultEmbeddingModel, semanticDocuments, semanticSearch } from './semantic-search.mjs';
+import { defaultEmbeddingModel, rankByEmbedding, semanticDocuments, semanticSearch } from './semantic-search.mjs';
 import { analysisFile, analyzedItems, analyzeSnapshot, fieldLabels, primaryNotice, sourceRoute } from './notice-analysis.mjs';
 import { officialImageOrigins, originalBlocks } from './original-source.mjs';
 import { activeDataDirectory, createBackup, readBackupUpload, restoreBackup } from './backup.mjs';
@@ -775,7 +775,7 @@ function verifiedImageSources(item, records) {
     const record = records[key];
     const note = record?.verifiedText?.[item.id];
     return note && note.version === record.version ? [{
-      id: key, scope: '官方圖片 ' + (index + 1) + ' · 已核對文字', text: note.text,
+      id: key, scope: '官方圖片 ' + (index + 1) + ' · 已核對文字', text: note.text, methodId: note.methodId,
       image: '/images/' + key + '?v=' + encodeURIComponent(note.version),
     }] : [];
   });
@@ -2272,8 +2272,15 @@ export function website({ dir = 'data', now = () => new Date(), fetchSource = fe
           let content;
           try {
             if (!question || question.length > 500) throw new Problem('請輸入 1–500 字的問題。');
+            const rankEvidence = store?.vectorSearch ? async (candidates, query) => {
+              try {
+                return await rankByEmbedding(store, candidates, query, embeddingModel, embeddingFetch);
+              } catch {
+                return [];
+              }
+            } : undefined;
             const result = await answerPlayer(item, question,
-              await askWith(preferred), verifiedImageSources(item, imageRecords));
+              await askWith(preferred), verifiedImageSources(item, imageRecords), rankEvidence);
             content = '<h3>Agent 回答</h3>' + (result.facts.length ? assistantFacts(result.facts) : '<p>已收錄的公告沒有足夠資料回答，請查閱官方原文。</p>') +
               (result.incomplete && result.facts.length ? '<p>部分條件仍需核對官方公告。</p>' : '') +
               assistantModel(result.metadata) + assistantEvidence(result.facts);

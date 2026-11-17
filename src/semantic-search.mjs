@@ -47,6 +47,10 @@ export async function ollamaEmbeddings(model, input, fetchImpl = fetch) {
 export async function semanticSearch(store, documents, query, model, fetchImpl) {
   const matches = semanticKeywords(documents, query);
   if (matches.length) return matches;
+  return rankByEmbedding(store, documents, query, model, fetchImpl);
+}
+
+export async function rankByEmbedding(store, documents, query, model, fetchImpl) {
   if (!documents.length) return [];
   if (!store?.vectorSearch) throw new Problem('這個網站需要以 PostgreSQL 模式啟動。', 422);
   const unique = new Map();
